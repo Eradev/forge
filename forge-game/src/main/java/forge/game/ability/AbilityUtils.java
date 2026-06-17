@@ -43,6 +43,7 @@ import org.apache.commons.lang3.tuple.Pair;
 
 import java.util.*;
 import java.util.Map.Entry;
+import java.util.function.BiFunction;
 import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -3193,73 +3194,68 @@ public class AbilityUtils {
         sa.addSplicedCards(c);
     }
 
-    public static int doXMath(final int num, final String operators, final Card c, CardTraitBase ctb) {
+    private enum MathOp {
+        PLUS("Plus", (num, sec) -> num + sec),
+        NMINUS("NMinus", (num, sec) -> sec - num),
+        MINUS("Minus", (num, sec) -> num - sec),
+        TWICE("Twice", (num, sec) -> num * 2),
+        THRICE("Thrice", (num, sec) -> num * 3),
+        HALF_UP("HalfUp", (num, sec) -> (int) Math.ceil(num / 2.0)),
+        HALF_DOWN("HalfDown", (num, sec) -> (int) Math.floor(num / 2.0)),
+        THIRD_UP("ThirdUp", (num, sec) -> (int) Math.ceil(num / 3.0)),
+        THIRD_DOWN("ThirdDown", (num, sec) -> (int) Math.floor(num / 3.0)),
+        NEGATIVE("Negative", (num, sec) -> num * -1),
+        TIMES("Times", (num, sec) -> num * sec),
+        POW("Pow", (num, sec) -> (int) Math.pow(num, sec)),
+        DIV_EVEN_UP("DivideEvenlyUp", (num, sec) -> sec == 0 ? 0 : num / sec + (num % sec == 0 ? 0 : 1)),
+        DIV_EVEN_DOWN("DivideEvenlyDown", (num, sec) -> sec == 0 ? 0 : num / sec),
+        MOD("Mod", (num, sec) -> num % sec),
+        ABS("Abs", (num, sec) -> Math.abs(num)),
+        LIMIT_MAX("LimitMax", (num, sec) -> Math.min(num, sec)),
+        LIMIT_MIN("LimitMin", (num, sec) -> Math.max(num, sec));
+
+        private final String token;
+        private final BiFunction<Integer, Integer, Integer> action;
+
+        MathOp(String token, BiFunction<Integer, Integer, Integer> action) {
+            this.token = token;
+            this.action = action;
+        }
+
+        public static Optional<MathOp> fromOperator(String opString) {
+            return Arrays.stream(values())
+                .filter(op -> opString.startsWith(op.token))
+                .findFirst();
+        }
+    }
+
+    public static int doXMath(int num, final String operators, final Card c, CardTraitBase ctb) {
         if (operators == null || operators.equals("none")) {
             return num;
         }
 
-        final String[] s = operators.split("\\.");
-        int secondaryNum = 0;
-
-        try {
-            if (s.length == 2) {
-                secondaryNum = Integer.parseInt(s[1]);
+        // Split expressions like "Plus.X/LimitMax.1" into discrete actions
+        final String[] chains = operators.split("/");
+        
+        for (String segment : chains) {
+            final String[] s = segment.split("\\.", 2);
+            final Optional<MathOp> opOpt = MathOp.fromOperator(s[0]);
+            
+            if (opOpt.isPresent()) {
+                int secondaryNum = 0;
+                if (s.length == 2) {
+                    if (StringUtils.isNumeric(s[1])) {
+                        secondaryNum = Integer.parseInt(s[1]);
+                    } else {
+                        secondaryNum = calculateAmount(c, s[1], ctb);
+                    }
+                }
+                // Update our running total with the current operation result
+                num = opOpt.get().action.apply(num, secondaryNum);
             }
-        } catch (final Exception e) {
-            secondaryNum = calculateAmount(c, s[1], ctb);
         }
 
-        if (s[0].contains("Plus")) {
-            return num + secondaryNum;
-        } else if (s[0].contains("NMinus")) {
-            return secondaryNum - num;
-        } else if (s[0].contains("Minus")) {
-            return num - secondaryNum;
-        } else if (s[0].contains("Twice")) {
-            return num * 2;
-        } else if (s[0].contains("Thrice")) {
-            return num * 3;
-        } else if (s[0].contains("HalfUp")) {
-            return (int) Math.ceil(num / 2.0);
-        } else if (s[0].contains("HalfDown")) {
-            return (int) Math.floor(num / 2.0);
-        } else if (s[0].contains("ThirdUp")) {
-            return (int) Math.ceil(num / 3.0);
-        } else if (s[0].contains("ThirdDown")) {
-            return (int) Math.floor(num / 3.0);
-        } else if (s[0].contains("Negative")) {
-            return num * -1;
-        } else if (s[0].contains("Times")) {
-            return num * secondaryNum;
-        } else if (s[0].contains("Pow")) {
-            return (int) Math.pow(num, secondaryNum);
-        } else if (s[0].contains("DivideEvenlyUp")) {
-            if (secondaryNum == 0) {
-                return 0;
-            }
-            return num / secondaryNum + (num % secondaryNum == 0 ? 0 : 1);
-        } else if (s[0].contains("DivideEvenlyDown")) {
-            if (secondaryNum == 0) {
-                return 0;
-            }
-            return num / secondaryNum;
-        } else if (s[0].contains("Mod")) {
-            return num % secondaryNum;
-        } else if (s[0].contains("Abs")) {
-            return Math.abs(num);
-        } else if (s[0].contains("LimitMax")) {
-            if (num < secondaryNum) {
-                return num;
-            }
-            return secondaryNum;
-        } else if (s[0].contains("LimitMin")) {
-            if (num > secondaryNum) {
-                return num;
-            }
-            return secondaryNum;
-        } else {
-            return num;
-        }
+        return num;
     }
 
     /**
