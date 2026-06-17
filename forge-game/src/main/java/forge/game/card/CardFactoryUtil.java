@@ -202,9 +202,9 @@ public class CardFactoryUtil {
      * @return an array of {@link java.lang.String} objects.
      */
     public static String extractOperators(final String expression) {
-        String[] l = expression.split("/");
-        return l.length > 1 ? l[1] : null;
-    }
+    String[] l = expression.split("/", 2);
+    return l.length > 1 ? l[1] : null;
+}
 
     /**
      * <p>
