@@ -33,6 +33,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+import static forge.game.ability.AbilityUtils.*;
+
 /**
  * Resolves Count$ expressions for ability calculations.
  * Extracted from {@link AbilityUtils#xCount}.
@@ -54,7 +56,7 @@ class XCountResolver {
             XCountContext ctx = new XCountContext();
             ctx.c = c;
             ctx.ctb = ctb;
-            final String s2 = AbilityUtils.applyAbilityTextChangeEffects(s, ctb);
+            final String s2 = applyAbilityTextChangeEffects(s, ctb);
             ctx.l = s2.split("/");
             ctx.expr = CardFactoryUtil.extractOperators(s2);
             ctx.game = c.getGame();
@@ -71,11 +73,11 @@ class XCountResolver {
         }
 
         int apply(int value) {
-            return AbilityUtils.doXMath(value, expr, c, ctb);
+            return doXMath(value, expr, c, ctb);
         }
 
         int branch(boolean condition) {
-            return apply(AbilityUtils.calculateAmount(c, sq[condition ? 1 : 2], ctb));
+            return apply(calculateAmount(c, sq[condition ? 1 : 2], ctb));
         }
     }
 
@@ -92,7 +94,9 @@ class XCountResolver {
 
         if (ctx.l[0].startsWith("SVar$")) {
             String n = ctx.l[0].substring(5);
-            String v = ctx.ctb == null ? ctx.c.getSVar(n) : ctx.ctb.getSVar(n);
+            String v = ctx.ctb == null
+                ? ctx.c.getSVar(n)
+                : ctx.ctb.getSVar(n);
             return OptionalInt.of(ctx.apply(resolve(ctx.c, v, ctx.ctb)));
         }
 
@@ -137,8 +141,8 @@ class XCountResolver {
             // Count$Compare <int comparator value>.<True>.<False>
             if (ctx.sq[0].startsWith("Compare")) {
                 final String[] compString = ctx.sq[0].split(" ");
-                final int lhs = AbilityUtils.calculateAmount(ctx.c, compString[1], ctx.ctb);
-                final int rhs =  AbilityUtils.calculateAmount(ctx.c, compString[2].substring(2), ctx.ctb);
+                final int lhs = calculateAmount(ctx.c, compString[1], ctx.ctb);
+                final int rhs =  calculateAmount(ctx.c, compString[2].substring(2), ctx.ctb);
                 boolean v = Expressions.compare(lhs, compString[2], rhs);
                 return OptionalInt.of(ctx.branch(v));
             }
@@ -146,7 +150,7 @@ class XCountResolver {
             // Count$IsPrime <SVar>.<True>.<False>
             if (ctx.sq[0].startsWith("IsPrime")) {
                 final String[] compString = ctx.sq[0].split(" ");
-                final int lhs = AbilityUtils.calculateAmount(ctx.c, compString[1], ctx.ctb);
+                final int lhs = calculateAmount(ctx.c, compString[1], ctx.ctb);
                 boolean v = IntMath.isPrime(lhs);
                 return OptionalInt.of(ctx.branch(v));
             }
@@ -189,7 +193,7 @@ class XCountResolver {
                         // and the spell that became that object as it resolved had a value of X chosen for any of its costs,
                         // the value of X for that ability is the same as the value of X for that spell, although the value of X for that permanent is 0.
                         if (TriggerType.ChangesZone.equals(t.getMode()) && ZoneType.Battlefield.name().equals(t.getParam("Destination"))) {
-                           int x = AbilityUtils.isUnlinkedFromCastSA(ctx.ctb, ctx.c) ? 0 : ctx.c.getXManaCostPaid();
+                           int x = isUnlinkedFromCastSA(ctx.ctb, ctx.c) ? 0 : ctx.c.getXManaCostPaid();
                            return OptionalInt.of(ctx.apply(x));
                         } else if (TriggerType.SpellCast.equals(t.getMode())) {
                             // Cast Trigger like Hydroid Krasis
@@ -214,7 +218,9 @@ class XCountResolver {
                     }
 
                     if (root.isReplacementAbility() && sa.hasParam("ETB")) {
-                        int x = AbilityUtils.isUnlinkedFromCastSA(ctx.ctb, ctx.c) ? 0 : ctx.c.getXManaCostPaid();
+                        int x = isUnlinkedFromCastSA(ctx.ctb, ctx.c)
+                            ? 0
+                            : ctx.c.getXManaCostPaid();
                         return OptionalInt.of(ctx.apply(x));
                     }
 
@@ -223,7 +229,7 @@ class XCountResolver {
 
                 // Count$Kicked.<numHB>.<numNotHB>
                 if (ctx.sq[0].startsWith("Kicked")) {
-                    boolean kicked = sa.isKicked() || (!AbilityUtils.isUnlinkedFromCastSA(ctx.ctb, ctx.c) && ctx.c.getKickerMagnitude() > 0);
+                    boolean kicked = sa.isKicked() || (!isUnlinkedFromCastSA(ctx.ctb, ctx.c) && ctx.c.getKickerMagnitude() > 0);
                     return OptionalInt.of(ctx.branch(kicked));
                 }
 
@@ -251,7 +257,7 @@ class XCountResolver {
                 //Count$HasNumChosenColors.<DefinedCards related to spellability>
                 if (ctx.sq[0].contains("HasNumChosenColors")) {
                     int sum = 0;
-                    for (Card card : AbilityUtils.getDefinedCards(ctx.c, ctx.sq[1], sa)) {
+                    for (Card card : getDefinedCards(ctx.c, ctx.sq[1], sa)) {
                         sum += card.getColor().getSharedColors(ColorSet.fromNames(ctx.c.getChosenColors())).countColors();
                     }
                     return OptionalInt.of(sum);
@@ -324,9 +330,11 @@ class XCountResolver {
                 // Count$Adamant.<Color>.<True>.<False>
                 if (ctx.sq[0].startsWith("Adamant")) {
                     final String payingMana = StringUtils.join(sa.getRootAbility().getPayingMana());
-                    final int num = ctx.sq[0].length() > 7 ? Integer.parseInt(ctx.sq[0].split("_")[1]) : 3;
+                    final int num = ctx.sq[0].length() > 7 
+                        ? Integer.parseInt(ctx.sq[0].split("_")[1])
+                        : 3;
                     final boolean adamant = StringUtils.countMatches(payingMana, MagicColor.toShortString(ctx.sq[1])) >= num;
-                    return OptionalInt.of(ctx.apply(AbilityUtils.calculateAmount(ctx.c,ctx.sq[adamant ? 2 : 3], ctx.ctb)));
+                    return OptionalInt.of(ctx.apply(calculateAmount(ctx.c,ctx.sq[adamant ? 2 : 3], ctx.ctb)));
                 }
 
                 if (ctx.sq[0].startsWith("LastStateBattlefield")) {
@@ -428,6 +436,7 @@ class XCountResolver {
             if (ctx.sq[0].equals("CastTotalManaSpent")) {
                 return OptionalInt.of(ctx.apply(ctx.c.getCastSA() != null ? ctx.c.getCastSA().getTotalManaSpent() : 0));
             }
+
             if (ctx.sq[0].startsWith("CastTotalManaSpent ")) {
                 final String[] k = ctx.sq[0].split(" ");
                 if (ctx.c.getCastSA() == null) {
@@ -442,6 +451,7 @@ class XCountResolver {
             if (ctx.sq[0].equals("hasOptionalKeywordAmount")) {
                 return OptionalInt.of(ctx.apply(ctx.c.getCastSA() != null && ctx.c.getCastSA().hasOptionalKeywordAmount(ctx.ctb.getKeyword()) ? 1 : 0));
             }
+
             if (ctx.sq[0].equals("OptionalKeywordAmount")) {
                 return OptionalInt.of(ctx.apply(ctx.c.getCastSA() != null ? ctx.c.getCastSA().getOptionalKeywordAmount(ctx.ctb.getKeyword()) : 0));
             }
@@ -469,6 +479,7 @@ class XCountResolver {
                 return OptionalInt.of(ctx.apply(colorOccurrences));
             }
         } // end ctx.ctb != null
+
         return OptionalInt.empty();
     }
 
@@ -477,7 +488,7 @@ class XCountResolver {
         //Count$SearchedLibrary.<DefinedPlayer>
         if (ctx.sq[0].contains("SearchedLibrary")) {
             int sum = 0;
-            for (Player p : AbilityUtils.getDefinedPlayers(ctx.c, ctx.sq[1], ctx.ctb)) {
+            for (Player p : getDefinedPlayers(ctx.c, ctx.sq[1], ctx.ctb)) {
                 sum += p.getLibrarySearched();
             }
             return OptionalInt.of(ctx.apply(sum));
@@ -518,9 +529,11 @@ class XCountResolver {
         if (ctx.sq[0].startsWith("RememberedSize")) {
             return OptionalInt.of(ctx.apply(ctx.c.getRememberedCount()));
         }
+
         if (ctx.sq[0].startsWith("ChosenSize")) {
             return OptionalInt.of(ctx.apply(ctx.c.getChosenCards().size()));
         }
+
         if (ctx.sq[0].startsWith("ImprintedSize")) {
             return OptionalInt.of(ctx.apply(ctx.c.getImprintedCards().size()));
         }
@@ -565,7 +578,6 @@ class XCountResolver {
             ctx.c = ctx.game.getChangeZoneLKIInfo(ctx.c);
         }
 
-        ////////////////////
         return OptionalInt.empty();
     }
 
@@ -588,20 +600,25 @@ class XCountResolver {
         }
 
         if (ctx.sq[0].startsWith("Kicked")) { // fallback for not spellAbility
-            return OptionalInt.of(ctx.branch(!AbilityUtils.isUnlinkedFromCastSA(ctx.ctb, ctx.c) && ctx.c.getKickerMagnitude() > 0));
+            return OptionalInt.of(ctx.branch(!isUnlinkedFromCastSA(ctx.ctb, ctx.c) && ctx.c.getKickerMagnitude() > 0));
         }
+
         if (ctx.sq[0].startsWith("PromisedGift")) {
             return OptionalInt.of(ctx.branch(ctx.c.getCastSA() != null && ctx.c.getCastSA().isGiftPromised()));
         }
+
         if (ctx.sq[0].startsWith("Teamwork")) {
             return OptionalInt.of(ctx.branch(ctx.c.getCastSA() != null && ctx.c.getCastSA().isTeamwork()));
         }
+        
         if (ctx.sq[0].startsWith("Escaped")) {
             return OptionalInt.of(ctx.branch(ctx.c.getCastSA() != null && ctx.c.getCastSA().isEscape()));
         }
+
         if (ctx.sq[0].startsWith("Emerged")) {
-            return OptionalInt.of(ctx.branch(!AbilityUtils.isUnlinkedFromCastSA(ctx.ctb, ctx.c) && ctx.c.getCastSA() != null && ctx.c.getCastSA().isEmerge()));
+            return OptionalInt.of(ctx.branch(!isUnlinkedFromCastSA(ctx.ctb, ctx.c) && ctx.c.getCastSA() != null && ctx.c.getCastSA().isEmerge()));
         }
+
         if (ctx.sq[0].startsWith("AltCost")) {
             return OptionalInt.of(ctx.branch(ctx.c.isOptionalCostPaid(OptionalCost.AltCost)));
         }
@@ -609,15 +626,19 @@ class XCountResolver {
         if (ctx.sq[0].equals("CardPower")) {
             return OptionalInt.of(ctx.apply(ctx.c.getNetPower()));
         }
+
         if (ctx.sq[0].equals("CardBasePower")) {
             return OptionalInt.of(ctx.apply(ctx.c.getCurrentPower()));
         }
+
         if (ctx.sq[0].equals("CardToughness")) {
             return OptionalInt.of(ctx.apply(ctx.c.getNetToughness()));
         }
+
         if (ctx.sq[0].equals("CardBaseToughness")) {
             return OptionalInt.of(ctx.apply(ctx.c.getCurrentToughness()));
         }
+
         if (ctx.sq[0].equals("CardSumPT")) {
             return OptionalInt.of(ctx.apply(ctx.c.getNetPower() + ctx.c.getNetToughness()));
         }
@@ -633,6 +654,7 @@ class XCountResolver {
         if (ctx.sq[0].equals("CardNumAttacksThisTurn")) {
             return OptionalInt.of(ctx.apply(ctx.c.getDamageHistory().getCreatureAttacksThisTurn()));
         }
+
         if (ctx.sq[0].equals("CardNumAttacksThisGame")) {
             return OptionalInt.of(ctx.apply(ctx.c.getDamageHistory().getAttacksThisGame()));
         }
@@ -647,9 +669,9 @@ class XCountResolver {
 
         if (ctx.sq[0].startsWith("CardCounters")) {
             // CardCounters.ALL to be used for Kinsbaile Borderguard and anything that cares about all counters
-            int count = 0;
-            if (ctx.sq[1].equals("ALL")) count = ctx.c.getNumAllCounters();
-            else count = ctx.c.getCounters(CounterType.getType(ctx.sq[1]));
+            int count = ctx.sq[1].equals("ALL") 
+                ? ctx.c.getNumAllCounters() 
+                : ctx.c.getCounters(CounterType.getType(ctx.sq[1]));
             return OptionalInt.of(ctx.apply(count));
         }
 
@@ -657,7 +679,7 @@ class XCountResolver {
             return OptionalInt.of(ctx.apply(ctx.c.getKeywordMagnitude(Keyword.smartValueOf(ctx.l[0].split(" ")[1]))));
         }
         if (ctx.sq[0].contains("TimesKicked")) {
-            return OptionalInt.of(ctx.apply(AbilityUtils.isUnlinkedFromCastSA(ctx.ctb, ctx.c) ? 0 : ctx.c.getKickerMagnitude()));
+            return OptionalInt.of(ctx.apply(isUnlinkedFromCastSA(ctx.ctb, ctx.c) ? 0 : ctx.c.getKickerMagnitude()));
         }
         if (ctx.sq[0].contains("TimesMutated")) {
             return OptionalInt.of(ctx.apply(ctx.c.getTimesMutated()));
@@ -718,8 +740,8 @@ class XCountResolver {
             final String type = ctx.sq[0].split("_")[1];
             boolean found = false;
             if (ctx.c.getCastFrom() != null && ctx.c.getCastSA() != null) {
-                int revealed = AbilityUtils.calculateAmount(ctx.c, "Revealed$Valid " + type, ctx.c.getCastSA());
-                int ctrl = AbilityUtils.calculateAmount(ctx.c, "Count$LastStateBattlefield " + type + ".YouCtrl", ctx.c.getCastSA());
+                int revealed = calculateAmount(ctx.c, "Revealed$Valid " + type, ctx.c.getCastSA());
+                int ctrl = calculateAmount(ctx.c, "Count$LastStateBattlefield " + type + ".YouCtrl", ctx.c.getCastSA());
                 if (revealed + ctrl >= 1) {
                     found = true;
                 }
@@ -787,51 +809,62 @@ class XCountResolver {
             return OptionalInt.of(ctx.apply(v));
         }
 
-        ////////////////////////
         return OptionalInt.empty();
     }
 
     static OptionalInt tryPlayerCounts(XCountContext ctx) {
-        // player info
         if (ctx.sq[0].equals("Hellbent")) {
             return OptionalInt.of(ctx.branch(ctx.player.hasHellbent()));
         }
+
         if (ctx.sq[0].equals("Metalcraft")) {
             return OptionalInt.of(ctx.branch(ctx.player.hasMetalcraft()));
         }
+
         if (ctx.sq[0].equals("Delirium")) {
             return OptionalInt.of(ctx.branch(ctx.player.hasDelirium()));
         }
+
         if (ctx.sq[0].equals("FatefulHour")) {
             return OptionalInt.of(ctx.branch(ctx.player.getLife() <= 5));
         }
+
         if (ctx.sq[0].equals("Revolt")) {
             return OptionalInt.of(ctx.branch(ctx.player.hasRevolt()));
         }
+
         if (ctx.sq[0].equals("Landfall")) {
             return OptionalInt.of(ctx.branch(ctx.player.hasLandfall()));
         }
+
         if (ctx.sq[0].equals("Monarch")) {
             return OptionalInt.of(ctx.branch(ctx.player.isMonarch()));
         }
+
         if (ctx.sq[0].equals("Initiative")) {
             return OptionalInt.of(ctx.branch(ctx.player.hasInitiative()));
         }
+
         if (ctx.sq[0].equals("StartingPlayer")) {
             return OptionalInt.of(ctx.branch(ctx.player.isStartingPlayer()));
         }
+
         if (ctx.sq[0].equals("Blessing")) {
             return OptionalInt.of(ctx.branch(ctx.player.hasBlessing()));
         }
+
         if (ctx.sq[0].equals("Threshold")) {
             return OptionalInt.of(ctx.branch(ctx.player.hasThreshold()));
         }
+
         if (ctx.sq[0].equals("CommittedCrimeThisTurn")) {
             return OptionalInt.of(ctx.branch(ctx.player.getCommittedCrimeThisTurn() > 0));
         }
+
         if (ctx.sq[0].equals("ExtraTurn")) {
             return OptionalInt.of(ctx.branch(ctx.game.getPhaseHandler().getPlayerTurn().isExtraTurn()));
         }
+
         if (ctx.sq[0].equals("YourStartingLife")) {
             return OptionalInt.of(ctx.apply(ctx.player.getStartingLife()));
         }
@@ -839,6 +872,7 @@ class XCountResolver {
         if (ctx.sq[0].equals("YourLifeTotal")) {
             return OptionalInt.of(ctx.apply(ctx.player.getLife()));
         }
+
         if (ctx.sq[0].equals("OppGreatestLifeTotal")) {
             return OptionalInt.of(ctx.apply(ctx.player.getOpponentsGreatestLifeTotal()));
         }
@@ -857,8 +891,9 @@ class XCountResolver {
         if (ctx.sq[0].equals("YouRollThisTurn")) {
             return OptionalInt.of(ctx.apply(ctx.player.getNumRollsThisTurn()));
         }
+
         if (ctx.sq[0].startsWith("YouRolledThisTurn")) {
-            int n = AbilityUtils.calculateAmount(ctx.c, ctx.sq[0].substring(17), ctx.ctb);
+            int n = calculateAmount(ctx.c, ctx.sq[0].substring(17), ctx.ctb);
             return OptionalInt.of(ctx.apply(Collections.frequency(ctx.player.getDiceRollsThisTurn(), n)));
         }
 
@@ -877,6 +912,7 @@ class XCountResolver {
         if (ctx.sq[0].equals("YourSpeed")) {
             return OptionalInt.of(ctx.apply(ctx.player.getSpeed()));
         }
+
         if (ctx.sq[0].equals("MaxSpeed")) {
             return OptionalInt.of(ctx.branch(ctx.player.maxSpeed()));
         }
@@ -897,6 +933,7 @@ class XCountResolver {
             // only used by Opal Palace, and it does add the trigger to the card
             return OptionalInt.of(ctx.apply(ctx.player.getCommanderCast(ctx.c)));
         }
+
         if (ctx.l[0].startsWith("TotalCommanderCastFromCommandZone")) {
             return OptionalInt.of(ctx.apply(ctx.player.getTotalCommanderCast()));
         }
@@ -904,18 +941,23 @@ class XCountResolver {
         if (ctx.sq[0].contains("LifeYouLostThisTurn")) {
             return OptionalInt.of(ctx.apply(ctx.player.getLifeLostThisTurn()));
         }
+
         if (ctx.sq[0].contains("LifeYouGainedThisTurn")) {
             return OptionalInt.of(ctx.apply(ctx.player.getLifeGainedThisTurn()));
         }
+
         if (ctx.sq[0].contains("LifeYourTeamGainedThisTurn")) {
             return OptionalInt.of(ctx.apply(ctx.player.getLifeGainedByTeamThisTurn()));
         }
+
         if (ctx.sq[0].contains("LifeYouGainedTimesThisTurn")) {
             return OptionalInt.of(ctx.apply(ctx.player.getLifeGainedTimesThisTurn()));
         }
+
         if (ctx.sq[0].contains("LifeOppsLostThisTurn")) {
             return OptionalInt.of(ctx.apply(ctx.player.getOpponentLostLifeThisTurn()));
         }
+
         if (ctx.sq[0].equals("BloodthirstAmount")) {
             return OptionalInt.of(ctx.apply(ctx.player.getBloodthirstAmount()));
         }
@@ -933,9 +975,11 @@ class XCountResolver {
         if (ctx.sq[0].equals("TotalDamageDoneByThisTurn")) {
             return OptionalInt.of(ctx.apply(ctx.c.getTotalDamageDoneBy()));
         }
+
         if (ctx.sq[0].equals("TotalDamageReceivedThisTurn")) {
             return OptionalInt.of(ctx.apply(ctx.c.getAssignedDamage()));
         }
+
         if (ctx.sq[0].equals("ExcessDamageReceivedThisTurn")) {
             return OptionalInt.of(ctx.apply(ctx.c.getExcessDamageThisTurn()));
         }
@@ -1024,7 +1068,7 @@ class XCountResolver {
         if (ctx.sq[0].startsWith("TypesSharedWith")) {
             Set<CardType.CoreType> thisTypes = Sets.newHashSet(ctx.c.getType().getCoreTypes());
             Set<CardType.CoreType> matches = new HashSet<>();
-            for (Card c1 : AbilityUtils.getDefinedCards(ctx.ctb.getHostCard(), ctx.l[0].split(" ", 2)[1], ctx.ctb)) {
+            for (Card c1 : getDefinedCards(ctx.ctb.getHostCard(), ctx.l[0].split(" ", 2)[1], ctx.ctb)) {
                 for (CardType.CoreType type : Sets.newHashSet(c1.getType().getCoreTypes())) {
                     if (thisTypes.contains(type)) {
                         matches.add(type);
@@ -1073,6 +1117,7 @@ class XCountResolver {
             final String validFilter = workingCopy[1];
             return OptionalInt.of(ctx.apply(CardLists.getValidCardCount(ctx.game.getLeftBattlefieldThisTurn(), validFilter, ctx.player, ctx.c, ctx.ctb)));
         }
+
         if (ctx.sq[0].startsWith("LeftGraveyardThisTurn")) {
             final String[] workingCopy = ctx.l[0].split(" ", 2);
             final String validFilter = workingCopy[1];
@@ -1082,6 +1127,7 @@ class XCountResolver {
         if (ctx.sq[0].equals("UnlockedDoors")) {
             return OptionalInt.of(ctx.apply(ctx.player.getUnlockedDoors().size()));
         }
+
         // Counts the distinct names of unlocked doors. Used for the "Promising Stairs"
         if (ctx.sq[0].equals("DistinctUnlockedDoors")) {
             return OptionalInt.of(ctx.apply(Sets.newHashSet(ctx.player.getUnlockedDoors()).size()));
@@ -1121,6 +1167,13 @@ class XCountResolver {
                     count++;
                 }
             }
+            return OptionalInt.of(ctx.apply(count));
+        }
+
+        if (ctx.sq[0].contains("Counters")) {
+            int count = ctx.sq[1].equals("ALL")
+                ? ctx.player.getNumAllCounters()
+                : ctx.player.getCounters(CounterType.getType(ctx.sq[1]));
             return OptionalInt.of(ctx.apply(count));
         }
 
@@ -1221,7 +1274,6 @@ class XCountResolver {
             return OptionalInt.of(ctx.branch(ctx.player.hasUrzaLands()));
         }
 
-        /////////////////
         return OptionalInt.empty();
     }
 
@@ -1247,12 +1299,9 @@ class XCountResolver {
                 cards = ctx.player.getCardsIn(sourceZone);
             }
 
-            byte colorCode;
-            if (ctx.sq.length > 1) {
-                colorCode = ManaAtom.fromName(ctx.sq[1]);
-            } else {
-                colorCode = ManaAtom.ALL_MANA_COLORS;
-            }
+            byte colorCode = ctx.sq.length > 1
+                ? ManaAtom.fromName(ctx.sq[1])
+                : ManaAtom.ALL_MANA_COLORS;
 
             return OptionalInt.of(ctx.apply(CardLists.getTotalChroma(cards, colorCode)));
         }
@@ -1317,8 +1366,8 @@ class XCountResolver {
 
         //Count$Random.<Min>.<Max>
         if (ctx.sq[0].equals("Random")) {
-            int min = AbilityUtils.calculateAmount(ctx.c, ctx.sq[1], ctx.ctb);
-            int max = AbilityUtils.calculateAmount(ctx.c, ctx.sq[2], ctx.ctb);
+            int min = calculateAmount(ctx.c, ctx.sq[1], ctx.ctb);
+            int max = calculateAmount(ctx.c, ctx.sq[2], ctx.ctb);
 
             return OptionalInt.of(MyRandom.getRandom().nextInt(1+max-min) + min);
         }
@@ -1412,7 +1461,7 @@ class XCountResolver {
             final String rest = ctx.l[0].substring(22);
             CardCollection list = CardLists.getValidCards(ctx.game.getCardsIn(ZoneType.Battlefield), rest, ctx.player, ctx.c, ctx.ctb);
             for (final Card card : list) {
-                kinds.addAll(card.getCounters().keySet());
+                kinds.addAll(card.getCounters().elementSet());
             }
             return OptionalInt.of(ctx.apply(kinds.size()));
         }
@@ -1426,7 +1475,7 @@ class XCountResolver {
         if (ctx.someCards == null) {
             ctx.someCards = getCardListForXCount(ctx.c, ctx.player, ctx.sq, ctx.ctb);
         } else if (ctx.paidparts.length > 1) {
-            num = AbilityUtils.handlePaid(ctx.someCards, ctx.paidparts[1], ctx.c, ctx.ctb);
+            num = handlePaid(ctx.someCards, ctx.paidparts[1], ctx.c, ctx.ctb);
         }
         if (num == null) {
             num = Iterables.size(ctx.someCards);
