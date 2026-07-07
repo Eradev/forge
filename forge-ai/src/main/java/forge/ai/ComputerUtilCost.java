@@ -649,7 +649,11 @@ public class ComputerUtilCost {
         for (Card c : cardsToConsider) {
             for (SpellAbility sa : c.getManaAbilities()) {
                 if (sa.getManaPart() != null) {
-                    colorsAvailable.add(sa.getManaPart().getOrigProduced());
+                    // Abilities that add multiple colors at once (e.g. "R W") list them space-separated;
+                    // record each color individually so downstream color heuristics see both.
+                    for (String color : sa.getManaPart().getOrigProduced().split(" ")) {
+                        colorsAvailable.add(color);
+                    }
                 }
             }
         }
