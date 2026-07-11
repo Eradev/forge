@@ -3,7 +3,6 @@ package forge.ai;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.MultimapBuilder;
 import forge.ai.AiCardMemory.MemorySet;
@@ -186,20 +185,12 @@ public class ComputerUtilMana {
         return score;
     }
 
-    private static void sortManaAbilities(final ListMultimap<ManaCostShard, SpellAbility> sourcesForShards, final ListMultimap<Integer, SpellAbility> manaAbilityMap, final SpellAbility sa) {
-        final Map<Card, Integer> manaCardMap = Maps.newHashMap();
+    private static void sortManaAbilities(final ListMultimap<ManaCostShard, SpellAbility> sourcesForShards,
+            final ListMultimap<Integer, SpellAbility> manaAbilityMap, final SpellAbility sa,
+            final ManaCostBeingPaid cost, final Player ai) {
         final List<Card> orderedCards = Lists.newArrayList();
-
-        for (final ManaCostShard shard : sourcesForShards.keySet()) {
-            for (SpellAbility ability : sourcesForShards.get(shard)) {
-                final Card hostCard = ability.getHostCard();
-                if (!manaCardMap.containsKey(hostCard)) {
-                    // TODO +1 when reserved
-                    manaCardMap.put(hostCard, scoreManaProducingCard(hostCard));
-                    orderedCards.add(hostCard);
-                }
-            }
-        }
+        final Map<Card, Integer> manaCardMap = ManaFilterConsolidation.buildManaCardRankings(ai, sourcesForShards,
+                cost, orderedCards, sa);
 
         // lower value means better choice
         orderedCards.sort(Comparator.comparingInt(manaCardMap::get));
@@ -951,7 +942,7 @@ public class ComputerUtilMana {
             }
         }
 
-        sortManaAbilities(sourcesForShards, manaAbilityMap, sa);
+        sortManaAbilities(sourcesForShards, manaAbilityMap, sa, cost, ai);
         ManaPaymentTracer.logMain(test, "  sources by shard: " + sourcesForShards, ctx);
         return sourcesForShards;
     }

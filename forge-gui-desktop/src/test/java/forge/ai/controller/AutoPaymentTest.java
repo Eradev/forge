@@ -6,6 +6,8 @@ import forge.ai.simulation.GameSimulator;
 import forge.ai.simulation.Plan;
 import forge.ai.simulation.SimulationTest;
 import forge.ai.simulation.SpellAbilityPicker;
+import forge.card.mana.ManaCost;
+import forge.card.mana.ManaCostParser;
 import forge.game.Game;
 import forge.game.card.Card;
 import forge.game.card.CardCollection;
@@ -20,6 +22,39 @@ import org.testng.annotations.Test;
 import java.util.List;
 
 public class AutoPaymentTest extends SimulationTest {
+
+    private static ManaCostBeingPaid cost(String s) {
+        return new ManaCostBeingPaid(new ManaCost(new ManaCostParser(s)));
+    }
+
+    private boolean canAutoPay(Game game, Player p, ManaCostBeingPaid mc, SpellAbility sa) {
+        final boolean[] result = new boolean[1];
+        p.runWithController(() -> result[0] = ComputerUtilMana.canPayManaCost(mc, sa, p, false),
+                new PlayerControllerAi(game, p, p.getOriginalLobbyPlayer()));
+        return result[0];
+    }
+
+    private boolean prodAutoPay(Game game, Player p, ManaCostBeingPaid mc, SpellAbility sa) {
+        final boolean[] result = new boolean[1];
+        p.runWithController(() -> result[0] = ComputerUtilMana.payManaCost(mc, sa, p, false),
+                new PlayerControllerAi(game, p, p.getOriginalLobbyPlayer()));
+        return result[0];
+    }
+
+    private void assertProductionPayment(Game game, Player p, ManaCostBeingPaid mc, SpellAbility sa) {
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+        AssertJUnit.assertTrue(prodAutoPay(game, p, mc, sa));
+    }
+
+    private int countTapped(Game game, String name) {
+        int i = 0;
+        for (Card c : game.getCardsIn(ZoneType.Battlefield)) {
+            if (c.getName().equals(name) && c.isTapped()) {
+                i++;
+            }
+        }
+        return i;
+    }
 
     /** Place a spell on the game stack for payment tests (player zones have no Stack). */
     private Card addSpellOnStack(Game game, String name, Player p) {
@@ -214,5 +249,25 @@ public class AutoPaymentTest extends SimulationTest {
         // AI able to cast both creatures
         Plan plan = picker.getPlan();
         AssertJUnit.assertEquals(2, plan.getDecisions().size());
+    }
+
+    // {R} alone with Mountain + Signet should tap the Mountain, not the Signet (single-shard penalty).
+    @Test
+    public void singleShardPrefersBasicOverSignet() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Mountain", p);
+        addCard("Boros Signet", p);
+        Card spell = addCardToZone("Shock", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        assertProductionPayment(game, p, cost("R"), sa);
+
+        AssertJUnit.assertEquals("Mountain should be tapped for R", 1, countTapped(game, "Mountain"));
+        AssertJUnit.assertEquals("Signet should be untapped", 0, countTapped(game, "Boros Signet"));
     }
 }
