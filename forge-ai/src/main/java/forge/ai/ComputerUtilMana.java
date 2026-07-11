@@ -55,24 +55,52 @@ public class ComputerUtilMana {
     public static boolean canPayManaCost(ManaCostBeingPaid cost, final SpellAbility sa, final Player ai, final boolean effect) {
         //check copy of cost so it doesn't modify the exist cost being paid
         cost = new ManaCostBeingPaid(cost);
-        return payManaCost(cost, sa, ai, true, true, effect) != null;
+        return payManaCost(cost, sa, ai, true, true, effect, ManaPaymentPlanTracer.outer()) != null;
     }
     public static boolean canPayManaCost(final SpellAbility sa, final Player ai, final int extraMana, final boolean effect) {
         return canPayManaCost(sa.getPayCosts(), sa, ai, extraMana, effect);
     }
     public static boolean canPayManaCost(final Cost cost, final SpellAbility sa, final Player ai, final int extraMana, final boolean effect) {
-        return payManaCost(cost, sa, ai, true, extraMana, true, effect);
+        return payManaCost(cost, sa, ai, true, extraMana, true, effect, ManaPaymentPlanTracer.outer());
     }
 
     public static boolean payManaCost(ManaCostBeingPaid cost, final SpellAbility sa, final Player ai, final boolean effect) {
-        return payManaCost(cost, sa, ai, false, true, effect) != null;
+        return payManaCost(cost, sa, ai, false, true, effect, null, ManaPaymentPlanTracer.outer()) != null;
     }
     public static boolean payManaCost(final Cost cost, final Player ai, final SpellAbility sa, final boolean effect) {
-        return payManaCost(cost, sa, ai, false, 0, true, effect);
+        return payManaCost(cost, sa, ai, false, 0, true, effect, ManaPaymentPlanTracer.outer());
     }
-    private static boolean payManaCost(final Cost cost, final SpellAbility sa, final Player ai, final boolean test, final int extraMana, boolean checkPlayable, final boolean effect) {
+    private static boolean payManaCost(final Cost cost, final SpellAbility sa, final Player ai, final boolean test, final int extraMana, boolean checkPlayable, final boolean effect, final ManaPaymentPlanTracer.Context ctx) {
         ManaCostBeingPaid manaCost = calculateManaCost(cost, sa, ai, test, extraMana, effect);
-        return payManaCost(manaCost, sa, ai, test, checkPlayable, effect) != null;
+        return payManaCost(manaCost, sa, ai, test, checkPlayable, effect, null, ctx) != null;
+    }
+
+    /** Collect host cards from a dry-run for Auto-pay highlight preview. */
+    private static void addPlanSource(final CardCollection planOut, final Card card) {
+        if (planOut != null && card != null && !planOut.contains(card)) {
+            planOut.add(card);
+        }
+    }
+
+    private static void collectPlanSources(final CardCollection planOut, final List<Mana> manaSpentToPay,
+            final List<SpellAbility> paymentList) {
+        if (planOut == null) {
+            return;
+        }
+        if (paymentList != null) {
+            for (final SpellAbility paid : paymentList) {
+                if (paid != null) {
+                    addPlanSource(planOut, paid.getHostCard());
+                }
+            }
+        }
+        if (manaSpentToPay != null) {
+            for (final Mana m : manaSpentToPay) {
+                if (m != null) {
+                    addPlanSource(planOut, m.getSourceCard());
+                }
+            }
+        }
     }
 
     /**
@@ -80,7 +108,7 @@ public class ComputerUtilMana {
      */
     public static int getConvergeCount(final SpellAbility sa, final Player ai) {
         ManaCostBeingPaid cost = calculateManaCost(sa.getPayCosts(), sa, ai, true, 0, false);
-        if (payManaCost(cost, sa, ai, true, true, false) != null) {
+        if (payManaCost(cost, sa, ai, true, true, false, ManaPaymentPlanTracer.outer()) != null) {
             return cost.getSunburst();
         }
         // TODO return -1 so API can bail out since it's unpayable
@@ -92,15 +120,45 @@ public class ComputerUtilMana {
         if (ai == null || sa == null)
             return false;
         sa.setActivatingPlayer(ai);
-        return payManaCost(sa.getPayCosts(), sa, ai, true, 0, false, false);
+        return payManaCost(sa.getPayCosts(), sa, ai, true, 0, false, false, ManaPaymentPlanTracer.outer());
     }
 
     public static CardCollection getManaSourcesToPayCost(final ManaCostBeingPaid cost, final SpellAbility sa, final Player ai, final boolean effect) {
-        final List<SpellAbility> payment = payManaCost(cost, sa, ai, true, true, effect);
-        if (payment == null) {
+        if (cost == null || sa == null || ai == null) {
             return null;
         }
-        return new CardCollection(payment.stream().map(s -> s.getHostCard()));
+        final CardCollection plan = new CardCollection();
+        if (payManaCost(cost, sa, ai, true, true, effect, plan, ManaPaymentPlanTracer.outer()) == null) {
+            return null;
+        }
+        return plan;
+    }
+
+    /** Production Auto-pay from the human payment prompt (emits {@code [prod]} plan when enabled). */
+    public static boolean payManaCostFromPaymentPrompt(final ManaCostBeingPaid cost, final SpellAbility sa,
+            final Player ai, final boolean effect) {
+        if (cost == null || sa == null || ai == null) {
+            return false;
+        }
+        return payManaCost(cost, sa, ai, false, true, effect, null, ManaPaymentPlanTracer.outerForPaymentPromptCommit()) != null;
+    }
+
+    /** Dry-run for the human payment-prompt Auto preview. */
+    public static CardCollection getManaSourcesToPayCostForPaymentPrompt(final ManaCostBeingPaid cost,
+            final SpellAbility sa, final Player ai, final boolean effect) {
+        if (cost == null || sa == null || ai == null) {
+            return null;
+        }
+        final CardCollection plan = new CardCollection();
+        if (payManaCost(cost, sa, ai, true, true, effect, plan, ManaPaymentPlanTracer.outerForPaymentPrompt()) == null) {
+            return null;
+        }
+        return plan;
+    }
+
+    public static CardCollection getManaSourcesToPayCostForPaymentPrompt(final ManaCostBeingPaid cost,
+            final SpellAbility sa, final Player ai) {
+        return getManaSourcesToPayCostForPaymentPrompt(cost, sa, ai, false);
     }
 
     private static Integer scoreManaProducingCard(final Card card) {
@@ -613,12 +671,37 @@ public class ComputerUtilMana {
     }
 
     // returns null if unpayable
-    private static List<SpellAbility> payManaCost(final ManaCostBeingPaid cost, final SpellAbility sa, final Player ai, final boolean test, boolean checkPlayable, boolean effect) {
+    private static List<Mana> payManaCost(final ManaCostBeingPaid cost, final SpellAbility sa, final Player ai,
+            final boolean test, boolean checkPlayable, boolean effect, final ManaPaymentPlanTracer.Context ctx) {
+        return payManaCost(cost, sa, ai, test, checkPlayable, effect, null, ctx);
+    }
+
+    private static List<Mana> payManaCost(final ManaCostBeingPaid cost, final SpellAbility sa, final Player ai,
+            final boolean test, boolean checkPlayable, boolean effect, final CardCollection planOut,
+            final ManaPaymentPlanTracer.Context ctx) {
+        if (ai == null || sa == null || cost == null || ctx == null) {
+            return null;
+        }
         if ((sa.isOffering() && sa.getSacrificedAsOffering() == null) || (sa.isEmerge() && sa.getSacrificedAsEmerge() == null)) {
             // nothing was chosen
             return null;
         }
 
+        final ManaPaymentPlanTracer.Context traceCtx = ctx.isOutermost() && ctx.costLabel == null
+                ? ctx.withCostLabel(cost.toString()) : ctx;
+        try {
+            return payManaCostImpl(cost, sa, ai, test, checkPlayable, effect, planOut, traceCtx);
+        } finally {
+            traceCtx.finishIfOutermost(test, sa, cost.isPaid());
+        }
+    }
+
+    private static List<Mana> payManaCostImpl(final ManaCostBeingPaid cost, final SpellAbility sa, final Player ai,
+            final boolean test, boolean checkPlayable, boolean effect, final CardCollection planOut,
+            final ManaPaymentPlanTracer.Context ctx) {
+        if (ai == null || sa == null || cost == null || ctx == null) {
+            return null;
+        }
         // A filter's own cost is paid in the middle of another payment, which still needs what it has set aside.
         // The filter is among that; if it isn't, the ability is being activated on its own and starts afresh like any other.
         if (test || !sa.isManaAbility() || !AiCardMemory.isRememberedCard(ai, sa.getHostCard(), MemorySet.PAYS_TAP_COST)) {
@@ -650,7 +733,11 @@ public class ComputerUtilMana {
 
         // not worth checking if it makes sense to not spend floating first
         if (manapool.payManaCostFromPool(cost, sa, test, manaSpentToPay)) {
+            ctx.recordStep(sa, test, "pool pays (floating mana)");
             CostPayment.handleOfferings(sa, test, cost.isPaid());
+            if (test) {
+                collectPlanSources(planOut, manaSpentToPay, paymentList);
+            }
             // paid all from floating mana
             return paymentList;
         }
@@ -715,13 +802,16 @@ public class ComputerUtilMana {
                 saList = sourcesForShards.get(toPay);
             }
 
-            saList.removeAll(saExcludeList);
+            if (saList != null) {
+                saList.removeAll(saExcludeList);
+            }
 
-            if (toPay == ManaCostShard.GENERIC && !hasConverge && !sa.hasParam("AIManaPref") && !sa.getHostCard().hasSVar("AIManaPref")) {
+            if (saList != null && toPay == ManaCostShard.GENERIC && !hasConverge && !sa.hasParam("AIManaPref") && !sa.getHostCard().hasSVar("AIManaPref")) {
                 saList = requiredSourcesFirst(saList, cost, sa);
             }
 
-            SpellAbility saPayment = saList.isEmpty() ? null : chooseManaAbility(cost, sa, ai, toPay, saList, checkPlayable || !test);
+            SpellAbility saPayment = saList != null && !saList.isEmpty()
+                    ? chooseManaAbility(cost, sa, ai, toPay, saList, checkPlayable || !test) : null;
 
             if (saPayment != null && ComputerUtilCost.isSacrificeSelfCost(saPayment.getPayCosts()) && sa.isTargeting(saPayment.getHostCard())) {
                 // not a good idea to sac a card that you're targeting with the SA you're paying for
@@ -766,6 +856,7 @@ public class ComputerUtilMana {
                     cost.decreaseShard(ManaCostShard.BLACK, 1);
                 }
 
+                ctx.recordStep(sa, test, "pay 2 life (paying " + toPay + ")");
                 if (!test) {
                     ai.payLife(2, sa, false);
                 }
@@ -789,6 +880,12 @@ public class ComputerUtilMana {
                 AiCardMemory.rememberCard(ai, saPayment.getHostCard(), MemorySet.PAYS_TAP_COST);
             }
 
+            final String manaProduced = predictManafromSpellAbility(saPayment, ai, toPay);
+            final Card paymentHost = saPayment.getHostCard();
+            ctx.recordStep(sa, test, "tap " + ManaPaymentPlanTracer.formatSourceLabel(paymentHost)
+                    + " -> " + (manaProduced != null ? manaProduced.trim() : "")
+                    + " (paying " + toPay + " for " + (ctx.costLabel != null ? ctx.costLabel : "?") + ")");
+
             if (test) {
                 // Check energy when testing
                 CostPayEnergy energyCost = saPayment.getPayCosts().getCostEnergy();
@@ -800,8 +897,9 @@ public class ComputerUtilMana {
                     }
                 }
 
-                String manaProduced = predictMana(saPayment, ai, toPay);
-                payMultipleMana(cost, manaProduced, ai);
+                if (manaProduced != null) {
+                    payMultipleMana(cost, manaProduced, ai);
+                }
                 // the mana to activate the ability has to come from the remaining sources
                 cost.increaseGenericMana(manaCostToActivate);
 
@@ -856,6 +954,7 @@ public class ComputerUtilMana {
         }
 
         if (test) {
+            collectPlanSources(planOut, manaSpentToPay, paymentList);
             manapool.refundMana(manaSpentToPay);
             resetPayment(paymentList);
         }
