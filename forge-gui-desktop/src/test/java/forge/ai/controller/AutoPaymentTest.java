@@ -56,6 +56,13 @@ public class AutoPaymentTest extends SimulationTest {
         return i;
     }
 
+    private CardCollection predictedManaSources(Game game, Player p, ManaCostBeingPaid mc, SpellAbility sa) {
+        final CardCollection[] sources = new CardCollection[1];
+        p.runWithController(() -> sources[0] = ComputerUtilMana.getManaSourcesToPayCostForPaymentPrompt(mc, sa, p, false),
+                new PlayerControllerAi(game, p, p.getOriginalLobbyPlayer()));
+        return sources[0];
+    }
+
     /** Place a spell on the game stack for payment tests (player zones have no Stack). */
     private Card addSpellOnStack(Game game, String name, Player p) {
         Card spell = createCard(name, p);
@@ -269,5 +276,43 @@ public class AutoPaymentTest extends SimulationTest {
 
         AssertJUnit.assertEquals("Mountain should be tapped for R", 1, countTapped(game, "Mountain"));
         AssertJUnit.assertEquals("Signet should be untapped", 0, countTapped(game, "Boros Signet"));
+    }
+
+    // {W} with Plains + Karakas: tap Plains; keep Karakas for its bounce ability.
+    @Test
+    public void karakasReservedWhenPlainsAvailable() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Plains", p);
+        addCard("Karakas", p);
+        Card spell = addCardToZone("Healing Salve", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        assertProductionPayment(game, p, cost("W"), sa);
+
+        AssertJUnit.assertEquals("Plains should be tapped for W", 1, countTapped(game, "Plains"));
+        AssertJUnit.assertEquals("Karakas should stay untapped", 0, countTapped(game, "Karakas"));
+    }
+
+    // {W} with only Karakas: still payable — reserve is soft depriorization, not a hard block.
+    @Test
+    public void karakasTappedWhenOnlyWhiteSource() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Karakas", p);
+        Card spell = addCardToZone("Healing Salve", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        assertProductionPayment(game, p, cost("W"), sa);
+
+        AssertJUnit.assertEquals("Karakas should be tapped when it is the only source", 1, countTapped(game, "Karakas"));
     }
 }
