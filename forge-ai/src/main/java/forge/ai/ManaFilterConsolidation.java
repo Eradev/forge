@@ -63,6 +63,17 @@ final class ManaFilterConsolidation {
      */
     static final int CREATURE_TAP_MANA_PENALTY = 10;
 
+    /**
+     * Host cards with {@code SVar:AIManaReserve:True} (Karakas, Library of Alexandria) —
+     * tap for mana only as last resort among reusable sources.
+     */
+    static final int MANA_RESERVE_HOST_PENALTY = 45;
+
+    static boolean isManaReserveHost(final Card card) {
+        return card != null && card.hasSVar("AIManaReserve")
+                && "True".equalsIgnoreCase(card.getSVar("AIManaReserve"));
+    }
+
     static boolean hasManaActivationCost(final SpellAbility ma) {
         final Cost c = ma == null ? null : ma.getPayCosts();
         return c != null && c.hasManaCost();
@@ -359,6 +370,9 @@ final class ManaFilterConsolidation {
         }
         if (hasExternalSacrificeManaOutlet(card)) {
             score += EXTERNAL_SACRIFICE_MANA_PENALTY;
+        }
+        if (isManaReserveHost(card)) {
+            score += MANA_RESERVE_HOST_PENALTY;
         }
 
         return score;
