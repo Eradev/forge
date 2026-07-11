@@ -50,27 +50,26 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 public class ComputerUtilMana {
-    private final static boolean DEBUG_MANA_PAYMENT = false;
 
     public static boolean canPayManaCost(ManaCostBeingPaid cost, final SpellAbility sa, final Player ai, final boolean effect) {
         //check copy of cost so it doesn't modify the exist cost being paid
         cost = new ManaCostBeingPaid(cost);
-        return payManaCost(cost, sa, ai, true, true, effect, ManaPaymentPlanTracer.outer()) != null;
+        return payManaCost(cost, sa, ai, true, true, effect, ManaPaymentTracer.outer()) != null;
     }
     public static boolean canPayManaCost(final SpellAbility sa, final Player ai, final int extraMana, final boolean effect) {
         return canPayManaCost(sa.getPayCosts(), sa, ai, extraMana, effect);
     }
     public static boolean canPayManaCost(final Cost cost, final SpellAbility sa, final Player ai, final int extraMana, final boolean effect) {
-        return payManaCost(cost, sa, ai, true, extraMana, true, effect, ManaPaymentPlanTracer.outer());
+        return payManaCost(cost, sa, ai, true, extraMana, true, effect, ManaPaymentTracer.outer());
     }
 
     public static boolean payManaCost(ManaCostBeingPaid cost, final SpellAbility sa, final Player ai, final boolean effect) {
-        return payManaCost(cost, sa, ai, false, true, effect, null, ManaPaymentPlanTracer.outer()) != null;
+        return payManaCost(cost, sa, ai, false, true, effect, null, ManaPaymentTracer.outer()) != null;
     }
     public static boolean payManaCost(final Cost cost, final Player ai, final SpellAbility sa, final boolean effect) {
-        return payManaCost(cost, sa, ai, false, 0, true, effect, ManaPaymentPlanTracer.outer());
+        return payManaCost(cost, sa, ai, false, 0, true, effect, ManaPaymentTracer.outer());
     }
-    private static boolean payManaCost(final Cost cost, final SpellAbility sa, final Player ai, final boolean test, final int extraMana, boolean checkPlayable, final boolean effect, final ManaPaymentPlanTracer.Context ctx) {
+    private static boolean payManaCost(final Cost cost, final SpellAbility sa, final Player ai, final boolean test, final int extraMana, boolean checkPlayable, final boolean effect, final ManaPaymentTracer.Context ctx) {
         ManaCostBeingPaid manaCost = calculateManaCost(cost, sa, ai, test, extraMana, effect);
         return payManaCost(manaCost, sa, ai, test, checkPlayable, effect, null, ctx) != null;
     }
@@ -108,7 +107,7 @@ public class ComputerUtilMana {
      */
     public static int getConvergeCount(final SpellAbility sa, final Player ai) {
         ManaCostBeingPaid cost = calculateManaCost(sa.getPayCosts(), sa, ai, true, 0, false);
-        if (payManaCost(cost, sa, ai, true, true, false, ManaPaymentPlanTracer.outer()) != null) {
+        if (payManaCost(cost, sa, ai, true, true, false, ManaPaymentTracer.outer()) != null) {
             return cost.getSunburst();
         }
         // TODO return -1 so API can bail out since it's unpayable
@@ -120,7 +119,7 @@ public class ComputerUtilMana {
         if (ai == null || sa == null)
             return false;
         sa.setActivatingPlayer(ai);
-        return payManaCost(sa.getPayCosts(), sa, ai, true, 0, false, false, ManaPaymentPlanTracer.outer());
+        return payManaCost(sa.getPayCosts(), sa, ai, true, 0, false, false, ManaPaymentTracer.outer());
     }
 
     public static CardCollection getManaSourcesToPayCost(final ManaCostBeingPaid cost, final SpellAbility sa, final Player ai, final boolean effect) {
@@ -128,7 +127,7 @@ public class ComputerUtilMana {
             return null;
         }
         final CardCollection plan = new CardCollection();
-        if (payManaCost(cost, sa, ai, true, true, effect, plan, ManaPaymentPlanTracer.outer()) == null) {
+        if (payManaCost(cost, sa, ai, true, true, effect, plan, ManaPaymentTracer.outer()) == null) {
             return null;
         }
         return plan;
@@ -140,7 +139,7 @@ public class ComputerUtilMana {
         if (cost == null || sa == null || ai == null) {
             return false;
         }
-        return payManaCost(cost, sa, ai, false, true, effect, null, ManaPaymentPlanTracer.outerForPaymentPromptCommit()) != null;
+        return payManaCost(cost, sa, ai, false, true, effect, null, ManaPaymentTracer.outerForPaymentPromptCommit()) != null;
     }
 
     /** Dry-run for the human payment-prompt Auto preview. */
@@ -150,7 +149,7 @@ public class ComputerUtilMana {
             return null;
         }
         final CardCollection plan = new CardCollection();
-        if (payManaCost(cost, sa, ai, true, true, effect, plan, ManaPaymentPlanTracer.outerForPaymentPrompt()) == null) {
+        if (payManaCost(cost, sa, ai, true, true, effect, plan, ManaPaymentTracer.outerForPaymentPrompt()) == null) {
             return null;
         }
         return plan;
@@ -206,14 +205,6 @@ public class ComputerUtilMana {
         // lower value means better choice
         orderedCards.sort(Comparator.comparingInt(manaCardMap::get));
 
-        if (DEBUG_MANA_PAYMENT) {
-            System.out.print("Ordered Cards: " + orderedCards.size());
-            for (Card card : orderedCards) {
-                System.out.print(card.getName() + ", ");
-            }
-            System.out.println();
-        }
-
         List<Integer> colorsMostCommon;
         if (sourcesForShards.keySet().stream().anyMatch(ManaCostShard::isGeneric)) {
             // early tempo is more important so we only look at hand here
@@ -232,20 +223,14 @@ public class ComputerUtilMana {
 
         // Filter abilities need another source to pay for them, so they're the worse pick
         // while ordinary sources can cover the cost on their own. Once they can't, the filters have to be
-        // activated first, while there are still sources left to pay for them. A filter land's own colorless
-        // mana doesn't count, since tapping the land for it uses up the filter.
-        final int freeMana = orderedCards.stream().map(ComputerUtilMana::getAIPlayableMana)
-                .filter(abilities -> abilities.stream().noneMatch(m -> getManaToActivate(m) > 0))
-                .mapToInt(abilities -> abilities.stream().mapToInt(m -> m.amountOfManaGenerated(true)).max().orElse(0)).sum();
+        // activated first, while there are still sources left to pay for them.
+        final int freeMana = orderedCards.stream().mapToInt(c -> getAIPlayableMana(c).stream()
+                .filter(m -> getGenericCostToActivate(m) == 0).mapToInt(m -> m.amountOfManaGenerated(true)).max().orElse(0)).sum();
         final boolean filtersFirst = freeMana < cost.getConvertedManaCost();
 
         for (final ManaCostShard shard : sourcesForShards.keySet()) {
             final Collection<SpellAbility> abilities = sourcesForShards.get(shard);
             final List<SpellAbility> newAbilities = new ArrayList<>(abilities);
-
-            if (DEBUG_MANA_PAYMENT) {
-                System.out.println("Unsorted Abilities: " + newAbilities);
-            }
 
             newAbilities.sort((ability1, ability2) -> {
                 int preOrder = orderedCards.indexOf(ability1.getHostCard()) - orderedCards.indexOf(ability2.getHostCard());
@@ -294,12 +279,8 @@ public class ComputerUtilMana {
 
             // stable partition: filter abilities to the back (or the front when they're needed)
             final List<SpellAbility> filters = new ArrayList<>();
-            newAbilities.removeIf(m -> getManaToActivate(m) > 0 && filters.add(m));
+            newAbilities.removeIf(m -> getGenericCostToActivate(m) > 0 && filters.add(m));
             newAbilities.addAll(filtersFirst ? 0 : newAbilities.size(), filters);
-
-            if (DEBUG_MANA_PAYMENT) {
-                System.out.println("Sorted Abilities: " + newAbilities);
-            }
 
             sourcesForShards.replaceValues(shard, newAbilities);
 
@@ -475,12 +456,6 @@ public class ComputerUtilMana {
             }
 
             if (!canPayShardWithSpellAbility(toPay, ai, paymentChoice, sa, cost, checkCosts, cost.getXManaCostPaidByColor())) {
-                continue;
-            }
-
-            // a mana ability that sacrifices something (Phyrexian Tower, Ashnod's Altar) is only worth it for a spell
-            // that is worth more than what it costs; this check reserves nothing, so it comes before the next ones
-            if (!ManaSacrifice.worthIt(ai, ma, sa)) {
                 continue;
             }
 
@@ -680,13 +655,13 @@ public class ComputerUtilMana {
 
     // returns null if unpayable
     private static List<Mana> payManaCost(final ManaCostBeingPaid cost, final SpellAbility sa, final Player ai,
-            final boolean test, boolean checkPlayable, boolean effect, final ManaPaymentPlanTracer.Context ctx) {
+            final boolean test, boolean checkPlayable, boolean effect, final ManaPaymentTracer.Context ctx) {
         return payManaCost(cost, sa, ai, test, checkPlayable, effect, null, ctx);
     }
 
     private static List<Mana> payManaCost(final ManaCostBeingPaid cost, final SpellAbility sa, final Player ai,
             final boolean test, boolean checkPlayable, boolean effect, final CardCollection planOut,
-            final ManaPaymentPlanTracer.Context ctx) {
+            final ManaPaymentTracer.Context ctx) {
         if (ai == null || sa == null || cost == null || ctx == null) {
             return null;
         }
@@ -695,7 +670,7 @@ public class ComputerUtilMana {
             return null;
         }
 
-        final ManaPaymentPlanTracer.Context traceCtx = ctx.isOutermost() && ctx.costLabel == null
+        final ManaPaymentTracer.Context traceCtx = ctx.isOutermost() && ctx.costLabel == null
                 ? ctx.withCostLabel(cost.toString()) : ctx;
         try {
             return payManaCostImpl(cost, sa, ai, test, checkPlayable, effect, planOut, traceCtx);
@@ -706,7 +681,7 @@ public class ComputerUtilMana {
 
     private static List<Mana> payManaCostImpl(final ManaCostBeingPaid cost, final SpellAbility sa, final Player ai,
             final boolean test, boolean checkPlayable, boolean effect, final CardCollection planOut,
-            final ManaPaymentPlanTracer.Context ctx) {
+            final ManaPaymentTracer.Context ctx) {
         if (ai == null || sa == null || cost == null || ctx == null) {
             return null;
         }
@@ -717,6 +692,8 @@ public class ComputerUtilMana {
             AiCardMemory.clearMemorySet(ai, MemorySet.PAYS_SAC_COST);
         }
         adjustManaCostToAvoidNegEffects(cost, sa.getHostCard(), ai);
+
+        ManaPaymentTracer.logMain(test, "paying " + cost + " for " + ManaPaymentTracer.manaPaymentSpellLabel(sa), ctx);
 
         List<Mana> manaSpentToPay = test ? new ArrayList<>() : sa.getPayingMana();
         List<SpellAbility> paymentList = Lists.newArrayList();
@@ -743,6 +720,7 @@ public class ComputerUtilMana {
         if (manapool.payManaCostFromPool(cost, sa, test, manaSpentToPay)) {
             ctx.recordStep(sa, test, "pool pays (floating mana)");
             CostPayment.handleOfferings(sa, test, cost.isPaid());
+            ManaPaymentTracer.logResult(test, true, "  result: PAID (pool)", ctx);
             if (test) {
                 collectPlanSources(planOut, manaSpentToPay, paymentList);
             }
@@ -753,7 +731,7 @@ public class ComputerUtilMana {
         int phyLifeToPay = 2;
         boolean purePhyrexian = cost.containsOnlyPhyrexianMana();
         boolean hasConverge = sa.getHostCard().hasConverge();
-        Multimap<ManaCostShard, SpellAbility> sourcesForShards = getSourcesForShards(cost, sa, ai, test, checkPlayable, hasConverge);
+        Multimap<ManaCostShard, SpellAbility> sourcesForShards = getSourcesForShards(cost, sa, ai, test, checkPlayable, hasConverge, ctx);
 
         int testEnergyPool = ai.getCounters(CounterEnumType.ENERGY);
         ManaCostShard toPay = null;
@@ -817,9 +795,12 @@ public class ComputerUtilMana {
             if (saList != null && toPay == ManaCostShard.GENERIC && !hasConverge && !sa.hasParam("AIManaPref") && !sa.getHostCard().hasSVar("AIManaPref")) {
                 saList = requiredSourcesFirst(saList, cost, sa);
             }
+            ManaPaymentTracer.logMain(test, "  shard " + toPay + " candidates: " + saList, ctx);
 
             SpellAbility saPayment = saList != null && !saList.isEmpty()
                     ? chooseManaAbility(cost, sa, ai, toPay, saList, checkPlayable || !test) : null;
+            ManaPaymentTracer.logMain(test, "  chosen for " + toPay + ": "
+                    + (saPayment == null ? "(none)" : saPayment.getHostCard()), ctx);
 
             if (saPayment != null && ComputerUtilCost.isSacrificeSelfCost(saPayment.getPayCosts()) && sa.isTargeting(saPayment.getHostCard())) {
                 // not a good idea to sac a card that you're targeting with the SA you're paying for
@@ -871,18 +852,13 @@ public class ComputerUtilMana {
                 continue;
             }
 
-            final int manaCostToActivate = getManaToActivate(saPayment);
-            if (manaCostToActivate > 0) {
-                if (test && !paymentList.isEmpty() && getManaToActivate(paymentList.get(paymentList.size() - 1)) > 0) {
-                    // chaining filters risks misplay
-                    saExcludeList.add(saPayment);
-                    continue;
-                }
+            final int manaCostToActivate = getGenericCostToActivate(saPayment);
+            if (!test && manaCostToActivate > 0) {
                 // A Signet-like source is about to be activated: float the mana for its own cost first,
                 // from a source the remaining cost can spare, so that its cost payment doesn't grab a
                 // land that's needed for a colored shard.
-                if (!test && !prepayFilterManaAbility(cost, sa, ai, saPayment, toPay, sourcesForShards, paymentList, effect)) {
-                    saPayment.getManaPart().clearExpressChoice();
+                if (!prepayFilterManaAbility(cost, sa, ai, saPayment, toPay, sourcesForShards, paymentList, effect)) {
+                    saList.remove(saPayment);
                     saExcludeList.add(saPayment);
                     continue;
                 }
@@ -895,9 +871,11 @@ public class ComputerUtilMana {
 
             final String manaProduced = predictManafromSpellAbility(saPayment, ai, toPay);
             final Card paymentHost = saPayment.getHostCard();
-            ctx.recordStep(sa, test, "tap " + ManaPaymentPlanTracer.formatSourceLabel(paymentHost)
+            ctx.recordStep(sa, test, "tap " + ManaPaymentTracer.formatSourceLabel(paymentHost)
                     + " -> " + (manaProduced != null ? manaProduced.trim() : "")
                     + " (paying " + toPay + " for " + (ctx.costLabel != null ? ctx.costLabel : "?") + ")");
+            ManaPaymentTracer.logTap(test, saPayment, sa, toPay.toString(),
+                    manaProduced != null ? manaProduced.trim() : "", ctx);
 
             if (test) {
                 // Check energy when testing
@@ -914,15 +892,15 @@ public class ComputerUtilMana {
                     payMultipleMana(cost, manaProduced, ai);
                 }
                 // the mana to activate the ability has to come from the remaining sources
-                if (manaCostToActivate > 0) {
-                    cost.addManaCost(getManaCostToActivate(saPayment));
-                }
+                cost.increaseGenericMana(manaCostToActivate);
 
                 // remove to prevent re-usage since resources don't get consumed
                 sourcesForShards.values().removeIf(CardTraitPredicates.isHostCard(saPayment.getHostCard()));
             } else {
                 final CostPayment pay = new CostPayment(saPayment.getPayCosts(), saPayment);
                 if (!pay.payComputerCosts(new AiCostDecision(ai, saPayment, effect, true))) {
+                    ManaPaymentTracer.logResult(test, false, "  reject " + saPayment.getHostCard()
+                            + " (payment failed)", ctx);
                     saList.remove(saPayment);
                     continue;
                 }
@@ -944,14 +922,10 @@ public class ComputerUtilMana {
 
         CostPayment.handleOfferings(sa, test, cost.isPaid());
 
-//        if (DEBUG_MANA_PAYMENT) {
-//            System.err.printf("%s > [%s] payment has %s (%s +%d) for (%s) %s:%n\t%s%n%n",
-//                    FThreads.debugGetCurrThreadId(), test ? "test" : "PROD", cost.isPaid() ? "*PAID*" : "failed", originalCost,
-//                    extraMana, sa.getHostCard(), sa.toUnsuppressedString(), StringUtils.join(paymentPlan, "\n\t"));
-//        }
-
         // The cost is still unpaid, so refund the mana and report
         if (!cost.isPaid()) {
+            ManaPaymentTracer.logResult(test, false, "  result: FAILED (unpaid " + toPay + ") for "
+                    + ManaPaymentTracer.manaPaymentSpellLabel(sa), ctx);
             manapool.refundMana(manaSpentToPay);
             if (test) {
                 resetPayment(paymentList);
@@ -962,11 +936,12 @@ public class ComputerUtilMana {
                     unpaid.add(cost);
                 }
             } else {
-                System.out.println("ComputerUtilMana: payManaCost() cost was not paid for " + sa + " (" +  sa.getHostCard().getName() + "). Didn't find what to pay for " + toPay);
                 sa.setSkip(true);
             }
             return null;
         }
+
+        ManaPaymentTracer.logResult(test, true, "  result: PAID", ctx);
 
         if (test) {
             collectPlanSources(planOut, manaSpentToPay, paymentList);
@@ -1027,8 +1002,8 @@ public class ComputerUtilMana {
     }
 
     /**
-     * Before a filter mana ability (e.g. Azorius Signet) is activated for real, tap ordinary sources
-     * for the mana it costs so that mana is floating when the ability's own cost gets paid.
+     * Before a filter mana ability (e.g. Arcane Signet) is activated for real, tap ordinary sources
+     * for the generic mana it costs so that mana is floating when the ability's own cost gets paid.
      * Sources that the rest of the cost still needs for a colored shard are left alone.
      *
      * @return false if no suitable source could be found for (the rest of) that mana.
@@ -1043,40 +1018,33 @@ public class ComputerUtilMana {
         final ManaCostBeingPaid remaining = new ManaCostBeingPaid(cost);
         payMultipleMana(remaining, predictMana(filter, ai, toPay), ai);
 
-        final ManaCost toActivate = getManaCostToActivate(filter);
-        final Set<SpellAbility> tried = new HashSet<>();
-        while (true) {
-            // what the floating mana leaves of the filter's cost; it stays in the pool to pay that cost
-            final ManaCostBeingPaid toFloat = new ManaCostBeingPaid(toActivate);
-            payMultipleMana(toFloat, floatingMana(manapool, filter), ai);
-            if (toFloat.isPaid()) {
-                return true;
-            }
-            final ManaCostShard shard = getNextShardToPay(toFloat, sourcesForShards);
+        int toFloat = getGenericCostToActivate(filter) - manapool.totalMana();
+        final List<SpellAbility> candidates = new ArrayList<>(sourcesForShards.get(ManaCostShard.GENERIC));
+        while (toFloat > 0) {
             SpellAbility chosen = null;
-            for (final SpellAbility m : sourcesForShards.get(shard)) {
+            for (final SpellAbility m : candidates) {
                 final Card host = m.getHostCard();
-                if (host.equals(filterHost) || getManaToActivate(m) > 0 || tried.contains(m)) {
+                if (host.equals(filterHost) || getGenericCostToActivate(m) > 0 || isManaSourceReserved(ai, host)) {
                     continue;
                 }
                 m.setActivatingPlayer(ai);
-                if (!m.canPlay()) {
+                if (!m.canPlay() || !CostPayment.canPayAdditionalCosts(m.getPayCosts(), m, effect)) {
                     continue;
                 }
                 // don't take the last source of a color the rest of the cost still needs
                 boolean needed = false;
-                for (final ManaCostShard other : remaining.getDistinctShards()) {
-                    if (other.isGeneric() || other == ManaCostShard.X) {
+                for (final ManaCostShard shard : remaining.getDistinctShards()) {
+                    if (shard.isGeneric() || shard == ManaCostShard.X) {
                         continue;
                     }
-                    final long others = sourcesForShards.get(other).stream().map(SpellAbility::getHostCard)
+                    final long others = sourcesForShards.get(shard).stream().map(SpellAbility::getHostCard)
                             .filter(c -> !c.equals(host) && !c.equals(filterHost)).distinct().count();
-                    if (others < remaining.getUnpaidShards(other)) {
+                    if (others < remaining.getUnpaidShards(shard)) {
                         needed = true;
                         break;
                     }
                 }
-                if (!needed && canPayShardWithSpellAbility(shard, ai, m, filter, toFloat, true, toFloat.getXManaCostPaidByColor())) {
+                if (!needed) {
                     chosen = m;
                     break;
                 }
@@ -1084,8 +1052,9 @@ public class ComputerUtilMana {
             if (chosen == null) {
                 return false;
             }
-            tried.add(chosen);
+            candidates.remove(chosen);
 
+            final int before = manapool.totalMana();
             if (chosen.getPayCosts().hasTapCost()) {
                 AiCardMemory.rememberCard(ai, chosen.getHostCard(), MemorySet.PAYS_TAP_COST);
             }
@@ -1102,7 +1071,9 @@ public class ComputerUtilMana {
             if (!used.canPlay()) {
                 sourcesForShards.values().removeIf(s -> s == used || (s.getHostCard().equals(used.getHostCard()) && !s.canPlay()));
             }
+            toFloat -= manapool.totalMana() - before;
         }
+        return true;
     }
 
     /**
@@ -1110,15 +1081,14 @@ public class ComputerUtilMana {
      */
     private static Multimap<ManaCostShard, SpellAbility> getSourcesForShards(final ManaCostBeingPaid cost,
             final SpellAbility sa, final Player ai, final boolean test, final boolean checkPlayable,
-            final boolean hasConverge) {
+            final boolean hasConverge, final ManaPaymentTracer.Context ctx) {
         // arrange all mana abilities by color produced.
         final ListMultimap<Integer, SpellAbility> manaAbilityMap = groupSourcesByManaColor(ai, checkPlayable);
+        ManaPaymentTracer.logMain(test, "  source colors: " + manaAbilityMap, ctx);
         if (manaAbilityMap.isEmpty()) {
             // no mana abilities, bailing out
+            ManaPaymentTracer.logMain(test, "  no playable mana abilities found", ctx);
             return null;
-        }
-        if (DEBUG_MANA_PAYMENT) {
-            System.out.println("DEBUG_MANA_PAYMENT: manaAbilityMap = " + manaAbilityMap);
         }
 
         // select which abilities may be used for each shard
@@ -1140,9 +1110,7 @@ public class ComputerUtilMana {
         }
 
         sortManaAbilities(sourcesForShards, manaAbilityMap, sa, cost);
-        if (DEBUG_MANA_PAYMENT) {
-            System.out.println("DEBUG_MANA_PAYMENT: sourcesForShards = " + sourcesForShards);
-        }
+        ManaPaymentTracer.logMain(test, "  sources by shard: " + sourcesForShards, ctx);
         return sourcesForShards;
     }
 
@@ -1438,30 +1406,14 @@ public class ComputerUtilMana {
         SetMultimap<ManaCostShard, SpellAbility> res =
                 MultimapBuilder.enumKeys(ManaCostShard.class).linkedHashSetValues().build();
 
-        // filter abilities add their own cost to the cost when used, so keep sources at hand for it
-        final List<ManaCostShard> shards = Lists.newArrayList(cost.getDistinctShards());
-        boolean hasGenericFilters = false;
-        for (final SpellAbility m : manaAbilityMap.get(ManaAtom.GENERIC)) {
-            final ManaCost toActivate = getManaCostToActivate(m);
-            if (toActivate == null) {
-                continue;
-            }
-            hasGenericFilters |= toActivate.getGenericCost() > 0;
-            for (final ManaCostShard shard : toActivate) {
-                if (!shards.contains(shard)) {
-                    shards.add(shard);
-                }
-            }
-        }
-        if ((cost.getGenericManaAmount() > 0 || cost.hasAnyKind(ManaAtom.OR_2_GENERIC) || hasGenericFilters) && manaAbilityMap.containsKey(ManaAtom.GENERIC)) {
+        // filter abilities add generic mana to the cost when used, so keep generic sources at hand for them
+        final boolean hasFilterSources = manaAbilityMap.get(ManaAtom.GENERIC).stream().anyMatch(m -> getGenericCostToActivate(m) > 0);
+        if ((cost.getGenericManaAmount() > 0 || cost.hasAnyKind(ManaAtom.OR_2_GENERIC) || hasFilterSources) && manaAbilityMap.containsKey(ManaAtom.GENERIC)) {
             res.putAll(ManaCostShard.GENERIC, manaAbilityMap.get(ManaAtom.GENERIC));
         }
 
         // loop over cost parts
-        for (ManaCostShard shard : shards) {
-            if (DEBUG_MANA_PAYMENT) {
-                System.out.println("DEBUG_MANA_PAYMENT: shard = " + shard);
-            }
+        for (ManaCostShard shard : cost.getDistinctShards()) {
             if (shard == ManaCostShard.S) {
                 res.putAll(shard, manaAbilityMap.get(ManaAtom.IS_SNOW));
                 continue;
@@ -1603,17 +1555,12 @@ public class ComputerUtilMana {
 
             for (SpellAbility ma : src.getManaAbilities()) {
                 ma.setActivatingPlayer(p);
-                // mana that needs a sacrifice only counts when something that costs next to nothing can be given up
                 if (!checkPlayable || ma.canPlay()) {
-                    if (ManaSacrifice.isSacrificeMana(ma) && !ManaSacrifice.hasExpendableFodder(p, ma)) {
-                        continue;
-                    }
-                    int costsToActivate = getManaToActivate(ma);
-                    int producedTotal = -costsToActivate;
-                    // a sub-ability can make the mana instead, when the first part's condition isn't met
-                    for (SpellAbility part = ma; part != null; part = part.getSubAbility()) {
-                        producedTotal += part.amountOfManaGenerated(true);
-                    }
+                    int costsToActivate = ma.getPayCosts().getCostMana() != null ? ma.getPayCosts().getCostMana().convertAmount() : 0;
+                    int producedMana = ma.getParamOrDefault("Produced", "").split(" ").length;
+                    int producedAmount = AbilityUtils.calculateAmount(src, ma.getParamOrDefault("Amount", "1"), ma);
+
+                    int producedTotal = producedMana * producedAmount - costsToActivate;
 
                     if (costsToActivate > 0) {
                         producedWithCost += producedTotal;
@@ -1789,9 +1736,6 @@ public class ComputerUtilMana {
         Collections.reverse(useLastManaSources);
         sortedManaSources.addAll(sortedManaSources.size(), useLastManaSources);
 
-        if (DEBUG_MANA_PAYMENT) {
-            System.out.println("DEBUG_MANA_PAYMENT: sortedManaSources = " + sortedManaSources);
-        }
         return sortedManaSources;
     }
 
@@ -1800,13 +1744,7 @@ public class ComputerUtilMana {
         final Game game = ai.getGame();
 
         for (final Card sourceCard : getAvailableManaSources(ai, checkPlayable)) {
-            if (DEBUG_MANA_PAYMENT) {
-                System.out.println("DEBUG_MANA_PAYMENT: groupSourcesByManaColor sourceCard = " + sourceCard);
-            }
             for (final SpellAbility m : getAIPlayableMana(sourceCard)) {
-                if (DEBUG_MANA_PAYMENT) {
-                    System.out.println("DEBUG_MANA_PAYMENT: groupSourcesByManaColor m = " + m);
-                }
                 m.setActivatingPlayer(ai);
                 if (checkPlayable && !m.canPlay()) {
                     continue;
@@ -1895,9 +1833,6 @@ public class ComputerUtilMana {
 
                 if (m.getHostCard().isSnow()) {
                     manaMap.put(ManaAtom.IS_SNOW, m);
-                }
-                if (DEBUG_MANA_PAYMENT) {
-                    System.out.println("DEBUG_MANA_PAYMENT: groupSourcesByManaColor manaMap  = " + manaMap);
                 }
             } // end of mana abilities loop
         } // end of mana sources loop
@@ -1999,35 +1934,22 @@ public class ComputerUtilMana {
         return res;
     }
 
-    /** The pool's mana that may be spent on the ability. */
-    private static String floatingMana(final ManaPool pool, final SpellAbility sa) {
-        final List<String> mana = new ArrayList<>();
-        for (final Mana m : pool) {
-            if (m.meetsManaRestrictions(sa)) {
-                mana.add(MagicColor.toShortString(m.getColor()));
-            }
-        }
-        return StringUtils.join(mana, ' ');
-    }
-
     /**
-     * Amount of mana that has to be paid to activate a mana ability.
+     * Generic mana that has to be paid to activate a mana ability.
      */
-    private static int getManaToActivate(final SpellAbility ma) {
-        final ManaCost manaCost = getManaCostToActivate(ma);
-        return manaCost == null ? 0 : manaCost.getCMC();
-    }
-
-    private static ManaCost getManaCostToActivate(final SpellAbility ma) {
+    public static int getGenericCostToActivate(final SpellAbility ma) {
         //TODO(correctness) this ignores cost modifiers, but might be too rare for the performance price
         final Cost cost = ma.getPayCosts();
-        return cost == null || !cost.hasManaCost() ? null : cost.getCostMana().getMana();
+        if (cost == null || !cost.hasManaCost()) {
+            return 0;
+        }
+        return cost.getCostMana().getMana().getGenericCost();
     }
 
     /**
-     * A "filter" mana ability is a plain "{cost}, {T}: Add ..." that produces more mana than it costs,
-     * such as the Signets and the Odyssey and Shadowmoor filter lands. Those are the only mana abilities
-     * with a mana cost that the AI knows how to pay for.
+     * A "filter" mana ability is a plain "{N}, {T}: Add ..." that produces more mana than it costs,
+     * such as the Signets or the Odyssey filter lands. Those are the only mana abilities with a
+     * mana cost that the AI knows how to pay for.
      */
     private static boolean isFilterManaAbility(final SpellAbility ma) {
         if (ma.getApi() != ApiType.Mana || ma.getSubAbility() != null) {
@@ -2035,7 +1957,7 @@ public class ComputerUtilMana {
         }
         final Cost cost = ma.getPayCosts();
         final ManaCost manaCost = cost.getCostMana().getMana();
-        if (manaCost.countX() > 0 || manaCost.getCMC() <= 0) {
+        if (!manaCost.isPureGeneric() || manaCost.getGenericCost() <= 0) {
             return false;
         }
         for (final CostPart part : cost.getCostParts()) {
@@ -2044,12 +1966,11 @@ public class ComputerUtilMana {
             }
         }
         final AbilityManaPart mp = ma.getManaPart();
-        if (mp == null || mp.isAnyMana() || mp.isSpecialMana() || mp.getOrigProduced().contains("Chosen")) {
+        if (mp == null || mp.isComboMana() || mp.isAnyMana() || mp.isSpecialMana() || mp.getOrigProduced().contains("Chosen")) {
             return false;
         }
         final int amount = AbilityUtils.calculateAmount(ma.getHostCard(), ma.getParamOrDefault("Amount", "1"), ma);
-        final int produced = mp.isComboMana() ? amount : mp.getOrigProduced().split(" ").length * amount;
-        return produced > manaCost.getCMC();
+        return mp.getOrigProduced().split(" ").length * amount > manaCost.getGenericCost();
     }
 
     /**
