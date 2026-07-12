@@ -44,9 +44,7 @@ final class ManaPaymentContext {
         Long reusableTapLandKey;
         Set<Card> reusableTapLandSet;
         int handProbeSpellId = -1;
-        Boolean hasOtherHandOrCommandSpells;
         Boolean handHasMulticolorManaSpells;
-        Boolean handHasGenericAndColoredCast;
         final CastabilityProbeScratch castabilityProbe = new CastabilityProbeScratch();
     }
 
