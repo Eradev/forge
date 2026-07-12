@@ -379,6 +379,15 @@ final class ManaFilterConsolidation {
     }
 
     /**
+     * Whether a filter's activation cost can be paid from free battlefield sources (for ranking bonuses).
+     */
+    @FunctionalInterface
+    interface ConsolidationFeasibility {
+        boolean canActivateFilter(Player ai, SpellAbility filter,
+                ListMultimap<Integer, SpellAbility> manaAbilityMap, boolean reusableOnly);
+    }
+
+    /**
      * Build host-card scores for sortManaAbilities. Lower is better.
      * {@code orderedCardsOut} receives hosts in discovery order before sort.
      */
@@ -386,6 +395,16 @@ final class ManaFilterConsolidation {
             final ListMultimap<ManaCostShard, SpellAbility> sourcesForShards,
             final ManaCostBeingPaid cost, final List<Card> orderedCardsOut,
             final SpellAbility spellBeingPaid) {
+        return buildManaCardRankings(ai, sourcesForShards, cost, orderedCardsOut, spellBeingPaid,
+                cost == null ? 0 : cost.getGenericManaAmount(), null, null);
+    }
+
+    static Map<Card, Integer> buildManaCardRankings(final Player ai,
+            final ListMultimap<ManaCostShard, SpellAbility> sourcesForShards,
+            final ManaCostBeingPaid cost, final List<Card> orderedCardsOut,
+            final SpellAbility spellBeingPaid, final int unpaidGeneric,
+            final ListMultimap<Integer, SpellAbility> manaAbilityMap,
+            final ConsolidationFeasibility probe) {
         final Map<Card, Integer> manaCardMap = new java.util.HashMap<>();
         if (sourcesForShards == null || cost == null || orderedCardsOut == null) {
             return manaCardMap;
@@ -468,6 +487,26 @@ final class ManaFilterConsolidation {
                 final Integer score = manaCardMap.get(key);
                 if (score != null) {
                     manaCardMap.put(key, score - FILTER_CONSOLIDATION_BONUS);
+                }
+            }
+        }
+
+        if (probe != null && unpaidGeneric >= 2 && manaAbilityMap != null
+                && sourcesForShards.containsKey(ManaCostShard.GENERIC)) {
+            final Set<Card> genericConsolidators = new HashSet<>();
+            for (SpellAbility ability : sourcesForShards.get(ManaCostShard.GENERIC)) {
+                if (ability == null) {
+                    continue;
+                }
+                final boolean consolidates = (isMultiPipActivationFilter(ability)
+                        && probe.canActivateFilter(ai, ability, manaAbilityMap, false))
+                        || (isMultiManaComboAbility(ability) && !hasManaActivationCost(ability));
+                final Card host = ability.getHostCard();
+                if (consolidates && host != null && genericConsolidators.add(host)) {
+                    final Integer score = manaCardMap.get(host);
+                    if (score != null) {
+                        manaCardMap.put(host, score - FILTER_CONSOLIDATION_BONUS);
+                    }
                 }
             }
         }
