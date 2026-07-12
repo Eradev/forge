@@ -1,5 +1,6 @@
 package forge.ai.controller;
 
+import com.google.common.collect.Lists;
 import forge.ai.ComputerUtilMana;
 import forge.ai.PlayerControllerAi;
 import forge.ai.simulation.GameSimulator;
@@ -314,5 +315,140 @@ public class AutoPaymentTest extends SimulationTest {
         assertProductionPayment(game, p, cost("W"), sa);
 
         AssertJUnit.assertEquals("Karakas should be tapped when it is the only source", 1, countTapped(game, "Karakas"));
+    }
+
+    private void registerBattlefieldTriggers(Game game, Card... cards) {
+        for (final Card c : cards) {
+            if (c != null) {
+                game.getTriggerHandler().registerActiveTrigger(c, false);
+            }
+        }
+    }
+
+    // --- TapsForMana bonuses and conditional mana links (Sprawl, Festival, Gemstone Caverns) ---
+
+    // Forest + Utopia Sprawl (chosen blue): one tap produces {G}{U} via TapsForMana trigger simulation.
+    @Test
+    public void utopiaSprawlPaysGreenAndChosenColorFromOneForestTap() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card forest = addCard("Forest", p);
+        Card sprawl = addCard("Utopia Sprawl", p);
+        sprawl.setChosenColors(Lists.newArrayList("blue"));
+        sprawl.attachToEntity(forest, null);
+        registerBattlefieldTriggers(game, sprawl);
+        Card spell = addCardToZone("Growth Spiral", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("G U"), sa));
+
+        CardCollection sources = predictedManaSources(game, p, cost("G U"), sa);
+        AssertJUnit.assertEquals("Only the Sprawl'd Forest should be tapped", 1,
+                sources.stream().filter(c -> "Forest".equals(c.getName())).count());
+        AssertJUnit.assertFalse("Utopia Sprawl is not a mana source host",
+                sources.anyMatch(c -> "Utopia Sprawl".equals(c.getName())));
+
+        AssertJUnit.assertTrue("Production auto-pay should match feasibility", prodAutoPay(game, p, cost("G U"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Forest"));
+    }
+
+    // Forest + Market Festival: one tap produces {G} plus two any ({G}{U}{R} from a single source).
+    @Test
+    public void marketFestivalProducesThreeManaFromOneForestTap() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card forest = addCard("Forest", p);
+        Card festival = addCard("Market Festival", p);
+        festival.attachToEntity(forest, null);
+        registerBattlefieldTriggers(game, festival);
+        Card spell = addCardToZone("Temur Charm", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue("One Festival'd Forest should pay {G}{U}{R}",
+                canAutoPay(game, p, cost("G U R"), sa));
+
+        CardCollection sources = predictedManaSources(game, p, cost("G U R"), sa);
+        AssertJUnit.assertEquals("Only the Festival'd Forest should be tapped", 1,
+                sources.stream().filter(c -> "Forest".equals(c.getName())).count());
+
+        AssertJUnit.assertTrue("Production auto-pay should match feasibility",
+                prodAutoPay(game, p, cost("G U R"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Forest"));
+    }
+
+    // One Festival'd Forest tap yields at most three mana ({G} plus two any); four colored pips is infeasible.
+    @Test
+    public void marketFestivalCannotPayFourColorsFromOneForest() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card forest = addCard("Forest", p);
+        Card festival = addCard("Market Festival", p);
+        festival.attachToEntity(forest, null);
+        registerBattlefieldTriggers(game, festival);
+        Card spell = addCardToZone("Lightning Helix", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertFalse("One Forest tap cannot pay {G}{U}{R}{W}",
+                canAutoPay(game, p, cost("G U R W"), sa));
+    }
+
+    // Gemstone Caverns with a luck counter: tap adds one mana of any color.
+    @Test
+    public void gemstoneCavernsWithLuckCounterPaysColoredMana() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card caverns = addCard("Gemstone Caverns", p);
+        caverns.addCounterInternal(forge.game.card.CounterEnumType.LUCK, 1, p, false, null, null);
+        Card spell = addCardToZone("Lightning Bolt", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue("Luck-counter Gemstone Caverns should pay {R}",
+                canAutoPay(game, p, cost("R"), sa));
+
+        CardCollection sources = predictedManaSources(game, p, cost("R"), sa);
+        AssertJUnit.assertTrue("Gemstone Caverns should be the mana source",
+                sources.anyMatch(c -> "Gemstone Caverns".equals(c.getName())));
+
+        AssertJUnit.assertTrue("Production auto-pay should match feasibility",
+                prodAutoPay(game, p, cost("R"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Gemstone Caverns"));
+    }
+
+    // Gemstone Caverns without a luck counter: tap adds {C} only.
+    @Test
+    public void gemstoneCavernsWithoutLuckCounterPaysColorlessOnly() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Gemstone Caverns", p);
+        Card spell = addCardToZone("Expedition Map", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("1"), sa));
+
+        CardCollection sources = predictedManaSources(game, p, cost("1"), sa);
+        AssertJUnit.assertTrue(sources.anyMatch(c -> "Gemstone Caverns".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Gemstone Caverns"));
     }
 }
