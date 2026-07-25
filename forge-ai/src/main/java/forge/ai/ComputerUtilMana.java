@@ -748,6 +748,22 @@ public class ComputerUtilMana {
         return payManaCost(cost, sa, ai, true, true, false, null, ctx.nestedWithFilterProbe()) != null;
     }
 
+    /** Nested castability dry-run from {@link CastabilityProbe}. */
+    static boolean payManaCostForCastabilityProbe(final forge.game.cost.Cost cost, final SpellAbility sa,
+            final Player ai, final ManaPaymentContext ctx) {
+        return payManaCost(cost, sa, ai, true, 0, true, false, ctx.nestedWithFilterProbe());
+    }
+
+    /** Test hook: reset castability nested dry-run counter. */
+    public static void resetCastabilityProbeDryRunCountForTests() {
+        CastabilityProbe.resetDryRunCountForTests();
+    }
+
+    /** Test hook: nested castability dry-runs since last reset. */
+    public static int getCastabilityProbeDryRunCountForTests() {
+        return CastabilityProbe.getDryRunCountForTests();
+    }
+
     static String capComboManaProduced(final String manaProduced, final int maxMana) {
         if (manaProduced == null || manaProduced.isEmpty() || maxMana <= 0) {
             return manaProduced;
