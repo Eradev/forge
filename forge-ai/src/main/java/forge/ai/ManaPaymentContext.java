@@ -45,6 +45,8 @@ final class ManaPaymentContext {
         Set<Card> reusableTapLandSet;
         int handProbeSpellId = -1;
         Boolean handHasMulticolorManaSpells;
+        Boolean hasOtherHandOrCommandSpells;
+        Boolean handHasGenericAndColoredCast;
         final CastabilityProbeScratch castabilityProbe = new CastabilityProbeScratch();
     }
 
@@ -78,10 +80,10 @@ final class ManaPaymentContext {
 
     /** Payment-prompt Auto preview dry-run ({@code [test]} plan). */
     static ManaPaymentContext outerForPaymentPrompt() {
-        if (!Boolean.getBoolean("forge.debugManaPayment.plan")) {
-            return outer();
+        if (Boolean.getBoolean("forge.debugManaPayment.plan")) {
+            return outer(new ArrayList<>(), true, true);
         }
-        return outer(new ArrayList<>(), true, true);
+        return outer(null, true, false);
     }
 
     /** Payment-prompt Auto commit ({@code [prod]} plan). */
