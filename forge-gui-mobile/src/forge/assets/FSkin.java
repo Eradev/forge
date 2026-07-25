@@ -1,6 +1,7 @@
 package forge.assets;
 
 import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.Files.FileType;
 import com.badlogic.gdx.assets.loaders.TextureLoader;
 import com.badlogic.gdx.files.FileHandle;
 import com.badlogic.gdx.graphics.Color;
@@ -26,10 +27,60 @@ import forge.util.WordUtil;
 import java.util.Map;
 
 public class FSkin {
+    private static final String FALLBACK_SKIN_DIR = "fallback_skin";
+    private static final String FALLBACK_SKIN_PROBE = "bg_splash.png";
+
     private static Array<String> allSkins;
     private static FileHandle preferredDir;
     private static String preferredName;
     private static boolean loaded = false;
+
+    /**
+     * Resolves the bundled fallback skin directory.
+     *
+     * @return fallback skin directory handle
+     */
+    public static FileHandle getBundledFallbackSkinDir() {
+        // iOS and Android both need to use internal() for bundled resources
+        if (GuiBase.isAndroid() || GuiBase.isIOS()) {
+            return Gdx.files.internal(FALLBACK_SKIN_DIR);
+        }
+        FileHandle fromClasspath = Gdx.files.classpath(FALLBACK_SKIN_DIR);
+        if (hasBundledFallbackSkin(fromClasspath)) {
+            return fromClasspath;
+        }
+        FileHandle fromLocal = Gdx.files.local(FALLBACK_SKIN_DIR);
+        if (hasBundledFallbackSkin(fromLocal)) {
+            return fromLocal;
+        }
+        // IDE debug often leaves target/classes empty; load from the module tree
+        FileHandle fromModule = Gdx.files.absolute(
+                "../forge-gui-mobile-dev/" + FALLBACK_SKIN_DIR);
+        if (hasBundledFallbackSkin(fromModule)) {
+            return fromModule;
+        }
+        return fromClasspath;
+    }
+
+    public static FileHandle getBundledFallbackSkinFile(final String filename) {
+        return getBundledFallbackSkinDir().child(filename);
+    }
+
+    private static boolean hasBundledFallbackSkin(final FileHandle dir) {
+        return dir != null && dir.child(FALLBACK_SKIN_PROBE).exists();
+    }
+
+    private static boolean isAccessibleSkinDir(final FileHandle themeDir) {
+        if (themeDir == null) {
+            return false;
+        }
+        if (FileType.Absolute.equals(themeDir.type())
+                || FileType.Local.equals(themeDir.type())) {
+            return themeDir.exists() && themeDir.isDirectory();
+        }
+        // Classpath/internal directory handles do not reliably implement exists().
+        return themeDir.child(FALLBACK_SKIN_PROBE).exists();
+    }
 
     public static Texture getLogo() {
         if (Forge.isMobileAdventureMode)
@@ -90,7 +141,7 @@ public class FSkin {
         return missing == 0;
     }
     private static void checkThemeDir(FileHandle themeDir, String themeName) {
-        if (themeDir == null || !themeDir.exists() || !themeDir.isDirectory()) {
+        if (!isAccessibleSkinDir(themeDir)) {
             System.err.println("Skin not found. Defaulting to fallback_skin.");
             useFallbackDir();
         } else {
@@ -109,8 +160,7 @@ public class FSkin {
         }
     }
     private static void useFallbackDir() {
-        // iOS and Android both need to use internal() for bundled resources
-        preferredDir = GuiBase.isMobile() ? Gdx.files.internal("fallback_skin") : Gdx.files.classpath("fallback_skin");
+        preferredDir = getBundledFallbackSkinDir();
     }
     public static void loadLight(String skinName, final SplashScreen splashScreen,FileHandle prefDir) {
         preferredDir = prefDir;

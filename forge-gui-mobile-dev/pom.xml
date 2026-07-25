@@ -174,16 +174,12 @@
         </plugins>
         <resources>
             <resource>
+                <directory>fallback_skin</directory>
+                <targetPath>fallback_skin</targetPath>
+            </resource>
+            <resource>
                 <directory>${project.basedir}</directory>
                 <includes>
-                    <include>**/title_bg_lq.png</include>
-                    <include>**/title_bg_lq_portrait.png</include>
-                    <include>**/transition.png</include>
-                    <include>**/adv_bg_texture.jpg</include>
-                    <include>**/adv_bg_splash.png</include>
-                    <include>**/bg_splash.png</include>
-                    <include>**/bg_texture.jpg</include>
-                    <include>**/font1.ttf</include>
                     <include>**/logo.gif</include>
                 </includes>
             </resource>
