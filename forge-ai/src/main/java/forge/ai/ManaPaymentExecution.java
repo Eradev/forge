@@ -370,6 +370,75 @@ final class ManaPaymentExecution {
         return false;
     }
 
+    /** True when hand or command zone contains another spell besides the one being paid for. */
+    static boolean hasOtherHandOrCommandSpells(final Player ai, final SpellAbility sa,
+            final ManaPaymentContext ctx) {
+        if (ctx != null && sa.getHostCard() != null
+                && ctx.caches.handProbeSpellId == sa.getHostCard().getId()
+                && ctx.caches.hasOtherHandOrCommandSpells != null) {
+            return ctx.caches.hasOtherHandOrCommandSpells;
+        }
+        final boolean result = hasOtherHandOrCommandSpellsUncached(ai, sa);
+        if (ctx != null && sa.getHostCard() != null) {
+            ctx.caches.handProbeSpellId = sa.getHostCard().getId();
+            ctx.caches.hasOtherHandOrCommandSpells = result;
+        }
+        return result;
+    }
+
+    static boolean hasOtherHandOrCommandSpellsUncached(final Player ai, final SpellAbility sa) {
+        final Card host = sa.getHostCard();
+        for (final ZoneType zone : HAND_AND_COMMAND) {
+            for (Card c : ai.getCardsIn(zone)) {
+                if (c == host) {
+                    continue;
+                }
+                for (SpellAbility candSa : c.getSpellAbilities()) {
+                    if (candSa.isSpell() && candSa.getPayCosts() != null && candSa.getPayCosts().hasManaCost()) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * True when hand/command still holds a cast with both generic and colored mana (e.g. Phelia {@code {1}{W}}),
+     * so a multi-color signet should stay available.
+     */
+    static boolean handHasGenericAndColoredCast(final Player ai, final SpellAbility spellBeingPaid,
+            final ManaPaymentContext ctx) {
+        if (ctx != null && spellBeingPaid.getHostCard() != null
+                && ctx.caches.handProbeSpellId == spellBeingPaid.getHostCard().getId()
+                && ctx.caches.handHasGenericAndColoredCast != null) {
+            return ctx.caches.handHasGenericAndColoredCast;
+        }
+        final boolean result = handHasGenericAndColoredCastUncached(ai, spellBeingPaid);
+        if (ctx != null && spellBeingPaid.getHostCard() != null) {
+            ctx.caches.handProbeSpellId = spellBeingPaid.getHostCard().getId();
+            ctx.caches.handHasGenericAndColoredCast = result;
+        }
+        return result;
+    }
+
+    static boolean handHasGenericAndColoredCastUncached(final Player ai, final SpellAbility spellBeingPaid) {
+        final Card being = spellBeingPaid.getHostCard();
+        for (final ZoneType zone : HAND_AND_COMMAND) {
+            for (Card c : ai.getCardsIn(zone)) {
+                if (c == being) {
+                    continue;
+                }
+                final ManaCost mc = c.getManaCost();
+                if (mc != null && !mc.isNoCost() && mc.getGenericCost() > 0
+                        && ColorSet.fromManaCost(mc).countColors() >= 1) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     /**
      * True for reusable, free sources that can pay this colored shard: dedicated lands, Arcane Signet
      * (commander color identity), etc. Excludes one-shot mana and any-mana filters (Study Hall {@code {1},{T}:any}).
@@ -1131,11 +1200,10 @@ final class ManaPaymentExecution {
     }
 
     static List<SpellAbility> capProbeCandidates(final List<SpellAbility> candidates) {
-        final int cap = 12;
-        if (candidates.size() <= cap) {
+        if (candidates.size() <= CastabilityProbe.CANDIDATE_CAP) {
             return candidates;
         }
-        return candidates.subList(0, cap);
+        return candidates.subList(0, CastabilityProbe.CANDIDATE_CAP);
     }
 
     /**
@@ -1178,7 +1246,23 @@ final class ManaPaymentExecution {
         if (valid.isEmpty()) {
             return null;
         }
-        return preferSourceThatKeepsRestPayable(cost, sa, ai, toPay, valid, test, ctx);
+        if (valid.size() == 1 || (ctx != null && ctx.inFilterActivationProbe) || !CastabilityProbe.shouldUse(sa, test, ctx)
+                || ((ctx == null || !ctx.paymentPromptPreview)
+                        && valid.stream().noneMatch(ManaPaymentExecution::isConsolidatingCandidate))
+                || !hasOtherHandOrCommandSpells(ai, sa, ctx)) {
+            return preferSourceThatKeepsRestPayable(cost, sa, ai, toPay, valid, test, ctx);
+        }
+        if ((toPay.isGeneric() || toPay == ManaCostShard.X)
+                && (handHasMulticolorManaSpells(ai, sa, ctx) || handHasGenericAndColoredCast(ai, sa, ctx))
+                && valid.stream().anyMatch(ManaPaymentExecution::isAnyMultiManaProducer)) {
+            return preferSourceThatKeepsRestPayable(cost, sa, ai, toPay, valid, test, ctx);
+        }
+
+        final boolean preferMultiForGeneric = toPay.isGeneric() || toPay == ManaCostShard.X;
+        final SpellAbility best = CastabilityProbe.pickBest(cost, valid, sa, ai, toPay,
+                ManaPaymentExecution::collectCardsConsumedByPayment, preferMultiForGeneric, test, ctx);
+        return best != null ? refreshExpressChoice(cost, sa, ai, toPay, best)
+                : refreshExpressChoice(cost, sa, ai, toPay, valid.get(0));
     }
 
     /** Count reusable 1-mana producers for {@code toPay} among {@code valid} candidates. */
@@ -2596,6 +2680,23 @@ final class ManaPaymentExecution {
             sortFreeSourcesForNestedActivation(sorted, toPay, ManaAbilitySort.shouldReserveColorlessMana(ai, sa));
             return sorted.get(0);
         }
+        if (ctx == null || ctx.inFilterActivationProbe
+                || !CastabilityProbe.shouldUseForNestedActivation(sa, test, ctx)) {
+            return ComputerUtilMana.chooseManaAbility(nestedCost, sa, ai, toPay, candidates, true);
+        }
+
+        final SpellAbility best = CastabilityProbe.pickBest(nestedCost, candidates, sa, ai, toPay,
+                (cand, spell, player, probeCtx) -> {
+                    final Set<Card> consumed = new HashSet<>();
+                    consumed.add(cand.getHostCard());
+                    consumed.add(filterAb.getHostCard());
+                    return consumed;
+                }, false, test, ctx);
+        if (best != null) {
+            ManaPaymentTracer.logMain(test, "    candidate for " + filterAb.getHostCard() + " {1}: "
+                    + best.getHostCard() + " chosen by castability probe", ctx);
+            return best;
+        }
         return ComputerUtilMana.chooseManaAbility(nestedCost, sa, ai, toPay, candidates, true);
     }
 
@@ -2925,6 +3026,9 @@ final class ManaPaymentExecution {
             }
 
             if (saPayment == null) {
+                if (test && ctx != null && ctx.inFilterActivationProbe) {
+                    CastabilityProbe.recordNoSourceColoredShardFailure(ctx, toPay, saList);
+                }
                 boolean lifeInsteadOfBlack = toPay.isBlack() && ai.hasKeyword("PayLifeInsteadOf:B");
                 if ((!toPay.isPhyrexian() && !lifeInsteadOfBlack) || !ai.canPayLife(phyLifeToPay, false, sa)
                         || (ai.getLife() <= phyLifeToPay && !ai.cantLoseForZeroOrLessLife())) {
