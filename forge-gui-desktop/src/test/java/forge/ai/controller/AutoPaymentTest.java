@@ -1,6 +1,7 @@
 package forge.ai.controller;
 
 import com.google.common.collect.Lists;
+import forge.ai.CastabilityProbe;
 import forge.ai.ComputerUtilMana;
 import forge.ai.PlayerControllerAi;
 import forge.ai.simulation.GameSimulator;
@@ -18,11 +19,17 @@ import forge.game.player.Player;
 import forge.game.spellability.SpellAbility;
 import forge.game.zone.ZoneType;
 import org.testng.AssertJUnit;
+import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
 import java.util.List;
 
 public class AutoPaymentTest extends SimulationTest {
+
+    @BeforeMethod
+    public void enableCastabilityProbeForPaymentTests() {
+        CastabilityProbe.enableForTests();
+    }
 
     private static ManaCostBeingPaid cost(String s) {
         return new ManaCostBeingPaid(new ManaCost(new ManaCostParser(s)));
@@ -64,6 +71,17 @@ public class AutoPaymentTest extends SimulationTest {
         return sources[0];
     }
 
+    /** Runs payment-prompt preview and returns castability nested dry-run count (see {@link ComputerUtilMana}). */
+    private int castabilityProbeDryRunsForPaymentPrompt(Game game, Player p, ManaCostBeingPaid mc, SpellAbility sa) {
+        final int[] count = new int[1];
+        p.runWithController(() -> {
+            ComputerUtilMana.resetCastabilityProbeDryRunCountForTests();
+            ComputerUtilMana.getManaSourcesToPayCostForPaymentPrompt(mc, sa, p, false);
+            count[0] = ComputerUtilMana.getCastabilityProbeDryRunCountForTests();
+        }, new PlayerControllerAi(game, p, p.getOriginalLobbyPlayer()));
+        return count[0];
+    }
+
     /** Place a spell on the game stack for payment tests (player zones have no Stack). */
     private Card addSpellOnStack(Game game, String name, Player p) {
         Card spell = createCard(name, p);
@@ -85,7 +103,7 @@ public class AutoPaymentTest extends SimulationTest {
         return null;
     }
 
-    // --- Nested filter execution / mana banking (no CastabilityProbe) ---
+    // --- Nested filter execution / mana banking ---
 
     @Test
     public void lotusPetalCanActivateSignetForOneWhiteCost() {
@@ -647,5 +665,100 @@ public class AutoPaymentTest extends SimulationTest {
 
         AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1"), sa));
         AssertJUnit.assertEquals(1, countTapped(game, "Gemstone Caverns"));
+    }
+
+    // Castability probe: no red sources — skip dry-runs for hand spells that need {R}.
+    @Test
+    public void castabilityProbeSkipsRedDependentsWhenNoRed() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Plains", p);
+        addCard("Forest", p);
+        addCard("Llanowar Elves", p);
+        addCard("Study Hall", p);
+        addCardToZone("Shock", p, ZoneType.Hand);
+        addCardToZone("Shock", p, ZoneType.Hand);
+        addCardToZone("Shock", p, ZoneType.Hand);
+        Card spell = addCardToZone("Healing Salve", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("W"), sa));
+        final int dryRuns = castabilityProbeDryRunsForPaymentPrompt(game, p, cost("W"), sa);
+        AssertJUnit.assertEquals("Red spells should be pruned without nested dry-runs", 0, dryRuns);
+        assertProductionPayment(game, p, cost("W"), sa);
+    }
+
+    // Castability probe: one Mountain — both {R} spells still get full dry-runs (no quantity over-prune).
+    @Test
+    public void castabilityProbeDoesNotSkipWhenOneRedRemains() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Mountain", p);
+        addCard("Plains", p);
+        addCard("Boros Signet", p);
+        addCardToZone("Shock", p, ZoneType.Hand);
+        addCardToZone("Shock", p, ZoneType.Hand);
+        Card spell = addCardToZone("Lightning Helix", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("R W"), sa));
+        final int dryRuns = castabilityProbeDryRunsForPaymentPrompt(game, p, cost("R W"), sa);
+        AssertJUnit.assertTrue("Both red spells should still be probed when {R} remains available", dryRuns >= 2);
+        assertProductionPayment(game, p, cost("R W"), sa);
+    }
+
+    // Soft CMC cap: skip dry-run for 5-drop when total mana < CMC; still probe low-CMC spells.
+    @Test
+    public void castabilityProbeSoftCmcCapSkipsWhenTotalManaInsufficient() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Mountain", p);
+        addCard("Plains", p);
+        addCard("Boros Signet", p);
+        addCardToZone("Air Elemental", p, ZoneType.Hand);
+        addCardToZone("Divine Favor", p, ZoneType.Hand);
+        Card spell = addCardToZone("Lightning Helix", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("R W"), sa));
+        final int dryRuns = castabilityProbeDryRunsForPaymentPrompt(game, p, cost("R W"), sa);
+        AssertJUnit.assertTrue("High-CMC spell should be skipped; low-CMC spell still probed", dryRuns >= 1);
+        assertProductionPayment(game, p, cost("R W"), sa);
+    }
+
+    // Canopy Vista produces {W} directly; Study Hall should not be used for a lone {W} pip.
+    @Test
+    public void studyHallDoesNotBeatDualLandForSingleWhite() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Study Hall", p);
+        addCard("Canopy Vista", p);
+        addCard("Snow-Covered Forest", p);
+        Card spell = addCardToZone("Healing Salve", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("W"), sa));
+
+        CardCollection sources = predictedManaSources(game, p, cost("W"), sa);
+        AssertJUnit.assertTrue("Canopy Vista should pay {W} directly",
+                sources.anyMatch(c -> "Canopy Vista".equals(c.getName())));
+        AssertJUnit.assertFalse("Study Hall should not be used for a single {W}",
+                sources.anyMatch(c -> "Study Hall".equals(c.getName())));
     }
 }
