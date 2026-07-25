@@ -78,6 +78,21 @@ final class ManaAbilitySort {
         return GenericColorPreference.DEFAULT;
     }
 
+    /** Match nested filter activation / {@link ComputerUtilMana#chooseManaAbility} generic ranking. */
+    static GenericColorPreference genericColorPreferenceForNestedActivation(final Player ai,
+            final SpellAbility sa, final ManaCostBeingPaid cost) {
+        if (ManaPaymentExecution.coloredBasicTappedThisPayment(ai)) {
+            return GenericColorPreference.PREFER_COLORLESS;
+        }
+        if (shouldReserveColorlessMana(ai, sa)) {
+            return GenericColorPreference.RESERVE_COLORLESS;
+        }
+        if (!ManaPaymentExecution.hasUnpaidColoredShards(cost)) {
+            return GenericColorPreference.PREFER_COLORLESS;
+        }
+        return GenericColorPreference.DEFAULT;
+    }
+
     /** Preference for paying generic shards this iteration (colored-basic-already-tapped wins over reserve). */
     public static GenericColorPreference resolveGenericColorPreference(final Player ai, final SpellAbility sa) {
         if (ManaPaymentExecution.coloredBasicTappedThisPayment(ai)) {
