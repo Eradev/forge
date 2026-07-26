@@ -1,0 +1,7 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Forge Android Rebuild" type="CompoundRunConfigurationType">
+    <toRun name="Forge Android Build" type="ShConfigurationType" />
+    <toRun name="Forge Android" type="ShConfigurationType" />
+    <method v="2" />
+  </configuration>
+</component>
