@@ -1,4 +1,5 @@
-# Build a debug-signed Forge Android test APK on Windows.
+# Build a debug-signed Forge Android test APK on Windows, including assets.zip
+# packaged from forge-gui/res (same layout as the release snapshot pack).
 # Requires: Maven 3.8.1 at C:\mvn-3.8.1, junctions C:\m2 / C:\asdk / C:\jdk17
 # (short paths avoid Windows cmd.exe 8191-char limit on the D8 classpath)
 
@@ -33,8 +34,21 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+$TargetDir = Join-Path $RepoRoot "forge-gui-android\target"
+$AssetsZip = Join-Path $TargetDir "assets.zip"
+if (-not (Test-Path $AssetsZip)) {
+    Write-Host "Maven did not produce assets.zip; packaging with scripts/android-assets.ps1..."
+    . (Join-Path $PSScriptRoot "android-assets.ps1")
+    Build-ForgeAndroidAssetsZip -RepoRoot $RepoRoot -Force | Out-Null
+}
+
 Write-Host ""
 Write-Host "APKs:"
-Get-ChildItem "$RepoRoot\forge-gui-android\target\*.apk" | ForEach-Object {
+Get-ChildItem "$TargetDir\*.apk" | ForEach-Object {
     Write-Host ("  {0} ({1:N0} bytes)" -f $_.FullName, $_.Length)
+}
+if (Test-Path $AssetsZip) {
+    Write-Host ("Assets: {0} ({1:N0} bytes)" -f $AssetsZip, (Get-Item $AssetsZip).Length)
+} else {
+    Write-Warning "assets.zip was not produced. run-android-debug.ps1 will try to package it on deploy."
 }
