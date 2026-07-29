@@ -8,7 +8,6 @@ import forge.card.mana.ManaCostShard;
 import forge.game.card.Card;
 import forge.game.card.CardCollection;
 import forge.game.cost.Cost;
-import forge.game.cost.CostPartMana;
 import forge.game.mana.ManaCostBeingPaid;
 import forge.game.player.Player;
 import forge.game.spellability.AbilityManaPart;
@@ -107,13 +106,6 @@ final class ManaAbilitySort {
     public static int compareGenericCandidatesForPayment(final SpellAbility a, final SpellAbility b,
             final GenericColorPreference pref, final int unpaidGeneric, final SpellAbility spellBeingPaid,
             final Player ai) {
-        if (spellBeingPaid != null && ai != null) {
-            final int bonusCmp = ManaPaymentExecution.castBonusPreferenceAdjustment(a, spellBeingPaid, ai)
-                    - ManaPaymentExecution.castBonusPreferenceAdjustment(b, spellBeingPaid, ai);
-            if (bonusCmp != 0) {
-                return bonusCmp;
-            }
-        }
         if (unpaidGeneric >= 2) {
             final boolean noUntap1 = ManaPaymentExecution.doesNotUntapNormally(a);
             final boolean noUntap2 = ManaPaymentExecution.doesNotUntapNormally(b);
@@ -147,7 +139,7 @@ final class ManaAbilitySort {
                 return disposableCmp;
             }
         }
-        final int filterCostCmp = compareAnyManaFilterActivationCost(a, b);
+        final int filterCostCmp = ManaFilterConsolidation.compareAnyManaFilterActivationCost(a, b);
         if (filterCostCmp != 0) {
             return filterCostCmp;
         }
@@ -170,15 +162,15 @@ final class ManaAbilitySort {
      */
     static int rankGenericManaSource(final SpellAbility ma, final GenericColorPreference pref) {
         if (ManaFilterConsolidation.isDisposableManaAbility(ma)) {
-            if (ManaPaymentExecution.sacrificesOtherPermanentsForMana(ma)) {
+            if (ManaFilterConsolidation.sacrificesOtherPermanentsForMana(ma)) {
                 return 55;
             }
-            if (ManaPaymentExecution.isSelfSacrificeCreatureMana(ma)) {
+            if (ManaFilterConsolidation.isSelfSacrificeCreatureMana(ma)) {
                 return 54;
             }
             return ManaPaymentExecution.isMultiManaDisposable(ma) ? 48 : 50;
         }
-        if (ManaPaymentExecution.requiresTappingOtherCreatureForMana(ma)) {
+        if (ManaFilterConsolidation.requiresTappingOtherCreatureForMana(ma)) {
             return 49;
         }
         if (ManaPaymentExecution.doesNotUntapNormally(ma)) {
@@ -203,7 +195,7 @@ final class ManaAbilitySort {
             return ma.getHostCard().isLand() ? 15 : 0;
         }
         if (hasManaCost) {
-            final int netLoss = netNegativeAnyManaFilterLoss(ma);
+            final int netLoss = ManaFilterConsolidation.netNegativeAnyManaFilterLoss(ma);
             return netLoss > 0 ? 40 + netLoss : 40;
         }
         final AbilityManaPart mp = ma.getManaPart();
@@ -289,37 +281,6 @@ final class ManaAbilitySort {
             }
             return consolidates;
         }
-    }
-
-    static int getFilterActivationCMC(final SpellAbility filter) {
-        if (filter.getPayCosts() == null || !filter.getPayCosts().hasManaCost()) {
-            return 0;
-        }
-        final CostPartMana costMana = filter.getPayCosts().getCostMana();
-        return costMana == null ? 0 : costMana.getMana().getCMC();
-    }
-
-    /** Mana lost per activation on any-mana filters that produce less than their activation cost (Signpost {2}: any). */
-    static int netNegativeAnyManaFilterLoss(final SpellAbility ma) {
-        if (!ManaFilterConsolidation.isAnyManaConsolidatingFilter(ma)
-                || ManaPaymentExecution.isNetPositiveConsolidator(ma)) {
-            return 0;
-        }
-        return Math.max(0, getFilterActivationCMC(ma) - ManaFilterConsolidation.getManaProducedAmount(ma));
-    }
-
-    /** Among any-mana filters, prefer lower activation costs ({1} Study Hall over {2} Signpost). */
-    static int compareAnyManaFilterActivationCost(final SpellAbility a, final SpellAbility b) {
-        if (!ManaFilterConsolidation.isAnyManaConsolidatingFilter(a)
-                || !ManaFilterConsolidation.isAnyManaConsolidatingFilter(b)) {
-            return 0;
-        }
-        final int c1 = getFilterActivationCMC(a);
-        final int c2 = getFilterActivationCMC(b);
-        if (c1 != c2) {
-            return Integer.compare(c1, c2);
-        }
-        return 0;
     }
 
     static boolean genericBucketHasColorlessSource(
@@ -503,7 +464,7 @@ final class ManaAbilitySort {
                 }
             }
         }
-        final int filterCostCmp = compareAnyManaFilterActivationCost(ability1, ability2);
+        final int filterCostCmp = ManaFilterConsolidation.compareAnyManaFilterActivationCost(ability1, ability2);
         if (filterCostCmp != 0) {
             return filterCostCmp;
         }
@@ -580,7 +541,7 @@ final class ManaAbilitySort {
             }
         }
         if (ab1Filter && ab2Filter) {
-            final int filterCostCmp = compareAnyManaFilterActivationCost(ability1, ability2);
+            final int filterCostCmp = ManaFilterConsolidation.compareAnyManaFilterActivationCost(ability1, ability2);
             if (filterCostCmp != 0) {
                 return filterCostCmp;
             }
@@ -678,25 +639,8 @@ final class ManaAbilitySort {
         return ability1.compareTo(ability2);
     }
 
-    static int compareCastBonusPreference(final ManaAbilitySortContext ctx,
-            final SpellAbility ability1, final SpellAbility ability2) {
-        if (ctx.spellBeingPaid == null) {
-            return 0;
-        }
-        final int adj1 = ManaPaymentExecution.castBonusPreferenceAdjustment(ability1, ctx.spellBeingPaid, ctx.ai);
-        final int adj2 = ManaPaymentExecution.castBonusPreferenceAdjustment(ability2, ctx.spellBeingPaid, ctx.ai);
-        if (adj1 != adj2) {
-            return Integer.compare(adj1, adj2);
-        }
-        return 0;
-    }
-
     static int compareManaAbilities(final ManaAbilitySortContext ctx, final SpellAbility ability1,
             final SpellAbility ability2, final ManaCostShard shard) {
-        final int castBonusCmp = compareCastBonusPreference(ctx, ability1, ability2);
-        if (castBonusCmp != 0) {
-            return castBonusCmp;
-        }
         final int preOrder = ctx.cardPreOrder(ability1, ability2);
         if (preOrder != 0) {
             return compareDifferentCards(ctx, ability1, ability2, shard);
