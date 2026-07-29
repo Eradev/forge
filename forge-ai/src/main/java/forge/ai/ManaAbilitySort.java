@@ -92,7 +92,7 @@ final class ManaAbilitySort {
         return GenericColorPreference.DEFAULT;
     }
 
-    /** Preference for paying generic shards this iteration (colored-basic-already-tapped wins over reserve). */
+    /** Preference for paying generic shards this iteration */
     public static GenericColorPreference resolveGenericColorPreference(final Player ai, final SpellAbility sa) {
         if (ManaPaymentExecution.coloredBasicTappedThisPayment(ai)) {
             return GenericColorPreference.PREFER_COLORLESS;
@@ -100,7 +100,7 @@ final class ManaAbilitySort {
         if (shouldReserveColorlessMana(ai, sa)) {
             return GenericColorPreference.RESERVE_COLORLESS;
         }
-        return GenericColorPreference.DEFAULT;
+        return GenericColorPreference.PREFER_COLORLESS;
     }
 
     public static int compareGenericCandidatesForPayment(final SpellAbility a, final SpellAbility b,
