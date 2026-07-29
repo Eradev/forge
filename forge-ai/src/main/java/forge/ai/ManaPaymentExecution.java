@@ -5,7 +5,6 @@ import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Lists;
 import forge.ai.AiCardMemory.MemorySet;
 import forge.ai.ability.AnimateAi;
-import forge.card.CardType;
 import forge.card.ColorSet;
 import forge.card.MagicColor;
 import forge.card.mana.ManaAtom;
@@ -62,80 +61,12 @@ final class ManaPaymentExecution {
         return c != null && c.hasTapCost();
     }
 
-    static boolean hasManaCost(final SpellAbility sa) {
-        final Cost c = payCostsOf(sa);
-        return c != null && c.hasManaCost();
-    }
-
-    static boolean isDisposableManaCard(final Card card) {
-        for (final SpellAbility ma : card.getManaAbilities()) {
-            if (ManaFilterConsolidation.isDisposableManaAbility(ma)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     static boolean isMultiManaDisposable(final SpellAbility ma) {
-        if (!ManaFilterConsolidation.isDisposableManaAbility(ma) || sacrificesOtherPermanentsForMana(ma)) {
+        if (!ManaFilterConsolidation.isDisposableManaAbility(ma)
+                || ManaFilterConsolidation.sacrificesOtherPermanentsForMana(ma)) {
             return false;
         }
         return ManaFilterConsolidation.getManaProducedAmount(ma) >= 2;
-    }
-
-    /** True for outlets like Ashnod's Altar that sacrifice another permanent, not the mana source itself. */
-    static boolean sacrificesOtherPermanentsForMana(final SpellAbility ma) {
-        final Cost payCosts = ma.getPayCosts();
-        if (payCosts == null) {
-            return false;
-        }
-        for (final CostPart part : payCosts.getCostParts()) {
-            if (part instanceof CostSacrifice && !part.payCostFromSource()) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /** Self-sac disposable on a creature (Treva's Attendant). */
-    static boolean isSelfSacrificeCreatureMana(final SpellAbility ma) {
-        return ManaFilterConsolidation.isDisposableManaAbility(ma) && !sacrificesOtherPermanentsForMana(ma)
-                && ma.getHostCard().isCreature();
-    }
-
-    /**
-     * Mana ability whose cost taps another creature via {@code tapXType} (Springleaf Drum,
-     * Survivors' Encampment). Excludes self-tap dorks ({@code Cost$ T} on the creature itself)
-     * and disposables, which have their own sacrifice tiers.
-     */
-    static boolean requiresTappingOtherCreatureForMana(final SpellAbility ma) {
-        if (ma == null || !ma.isManaAbility() || ManaFilterConsolidation.isDisposableManaAbility(ma)) {
-            return false;
-        }
-        final Cost payCosts = ma.getPayCosts();
-        if (payCosts == null) {
-            return false;
-        }
-        for (final CostPart part : payCosts.getCostParts()) {
-            if (part instanceof CostTapType && isCreatureTapType(part.getType())) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /** True when a {@code tapXType} type string targets creatures (Creature, Elf, Spirit, ...). */
-    static boolean isCreatureTapType(final String type) {
-        if (type == null) {
-            return false;
-        }
-        for (final String option : type.split(";")) {
-            final String core = option.split("\\.", 2)[0].trim();
-            if ("Creature".equals(core) || CardType.isACreatureType(core)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -161,10 +92,10 @@ final class ManaPaymentExecution {
         if (!ManaFilterConsolidation.isDisposableManaAbility(ma)) {
             return -1;
         }
-        if (sacrificesOtherPermanentsForMana(ma)) {
+        if (ManaFilterConsolidation.sacrificesOtherPermanentsForMana(ma)) {
             return 2;
         }
-        if (isSelfSacrificeCreatureMana(ma)) {
+        if (ManaFilterConsolidation.isSelfSacrificeCreatureMana(ma)) {
             return 1;
         }
         return 0;
@@ -498,7 +429,7 @@ final class ManaPaymentExecution {
         if (ManaFilterConsolidation.isDisposableManaAbility(ma)) {
             return 2;
         }
-        return requiresTappingOtherCreatureForMana(ma) ? 1 : 0;
+        return ManaFilterConsolidation.requiresTappingOtherCreatureForMana(ma) ? 1 : 0;
     }
 
     /** Reusable source that produces exactly {@code remaining} mana with no filter activation cost. */
@@ -574,7 +505,8 @@ final class ManaPaymentExecution {
                 if (isMultiManaDisposable(ma) && ManaFilterConsolidation.getManaProducedAmount(ma) >= remaining) {
                     flags.hasMultiManaDisposableAlt = true;
                 }
-                if (ManaFilterConsolidation.isDisposableManaAbility(ma) && !sacrificesOtherPermanentsForMana(ma)) {
+                if (ManaFilterConsolidation.isDisposableManaAbility(ma)
+                        && !ManaFilterConsolidation.sacrificesOtherPermanentsForMana(ma)) {
                     flags.hasSelfSacDisposableAlt = true;
                 }
                 if (producesShardDirectly(ma, toPay)) {
@@ -589,15 +521,19 @@ final class ManaPaymentExecution {
                 if (isAnyMultiManaProducer(ma)) {
                     flags.hasAnyMultiAlt = true;
                 }
-                if (!ManaFilterConsolidation.isDisposableManaAbility(ma) && !requiresTappingOtherCreatureForMana(ma)) {
+                if (!ManaFilterConsolidation.isDisposableManaAbility(ma)
+                        && !ManaFilterConsolidation.requiresTappingOtherCreatureForMana(ma)) {
                     flags.hasReusableNonCreatureTapAlt = true;
                 }
-                if (!ManaFilterConsolidation.isDisposableManaAbility(ma) && !requiresTappingOtherCreatureForMana(ma)
+                if (!ManaFilterConsolidation.isDisposableManaAbility(ma)
+                        && !ManaFilterConsolidation.requiresTappingOtherCreatureForMana(ma)
                         && !doesNotUntapNormally(ma)) {
                     flags.hasReusableUntappingAlt = true;
                 }
-                if (ManaFilterConsolidation.isAnyManaConsolidatingFilter(ma) && ManaFilterConsolidation.isAnyManaConsolidatingFilter(skip)
-                        && getFilterActivationCMC(ma) < getFilterActivationCMC(skip)) {
+                if (ManaFilterConsolidation.isAnyManaConsolidatingFilter(ma)
+                        && ManaFilterConsolidation.isAnyManaConsolidatingFilter(skip)
+                        && ManaFilterConsolidation.getFilterActivationCMC(ma)
+                                < ManaFilterConsolidation.getFilterActivationCMC(skip)) {
                     flags.hasCheaperAnyManaFilterAlt = true;
                 }
             }
@@ -649,36 +585,30 @@ final class ManaPaymentExecution {
         return false;
     }
 
-    /**
-     * True when one activation of this filter produces multiple colored mana at once (e.g. Boros Signet
-     * {@code Produced$ R W}). {@code Produced$ Any} filters such as Study Hall add only one mana per
-     * activation and must not receive the multi-shard consolidation bonus.
-     */
     /** Lower is better. Disposable sources are heavily penalized so signets beat Lotus Petal for colored pips. */
     static int paymentEfficiencyScore(final SpellAbility chosen, final int consumedCount,
             final ManaCostBeingPaid cost, final ManaCostShard toPay, final List<SpellAbility> alternatives,
             final Player ai, final SpellAbility sa, final ManaPaymentContext ctx) {
         int score = consumedCount;
-        final int castBonusAdj = castBonusPreferenceAdjustment(chosen, sa, ai);
         final int remaining = remainingPipsForShard(cost, toPay);
         final AlternativeScanFlags altFlags = AlternativeScanFlags.scan(alternatives, chosen, toPay, remaining);
-        if (ManaFilterConsolidation.isDisposableManaAbility(chosen) && castBonusAdj >= 0) {
+        if (ManaFilterConsolidation.isDisposableManaAbility(chosen)) {
             if (altFlags.hasMultiShardAlt || !disposableIsReasonableForShard(chosen, cost, toPay, alternatives, ai, ctx)) {
                 score += 100;
             }
         }
-        if (sacrificesOtherPermanentsForMana(chosen) && altFlags.hasSelfSacDisposableAlt) {
+        if (ManaFilterConsolidation.sacrificesOtherPermanentsForMana(chosen) && altFlags.hasSelfSacDisposableAlt) {
             score += 75;
         }
-        if (requiresTappingOtherCreatureForMana(chosen) && castBonusAdj >= 0
+        if (ManaFilterConsolidation.requiresTappingOtherCreatureForMana(chosen)
                 && altFlags.hasReusableNonCreatureTapAlt) {
             score += 40;
         }
-        if (doesNotUntapNormally(chosen) && castBonusAdj >= 0 && altFlags.hasReusableUntappingAlt) {
+        if (doesNotUntapNormally(chosen) && altFlags.hasReusableUntappingAlt) {
             score += 60;
         }
-        if (netNegativeAnyManaFilterLoss(chosen) > 0 && altFlags.hasCheaperAnyManaFilterAlt) {
-            score += 25 * netNegativeAnyManaFilterLoss(chosen);
+        if (ManaFilterConsolidation.netNegativeAnyManaFilterLoss(chosen) > 0 && altFlags.hasCheaperAnyManaFilterAlt) {
+            score += 25 * ManaFilterConsolidation.netNegativeAnyManaFilterLoss(chosen);
         }
         if (ManaFilterConsolidation.isAnyManaConsolidatingFilter(chosen) && cost.getGenericManaAmount() > 0 && !toPay.isGeneric()) {
             score += 50;
@@ -706,9 +636,6 @@ final class ManaPaymentExecution {
         if ((toPay.isGeneric() || toPay == ManaCostShard.X) && producesColoredManaWithoutFilterCost(chosen)
                 && handHasMulticolorManaSpells(ai, sa, ctx) && altFlags.hasAnyMultiAlt) {
             score += 50;
-        }
-        if (castBonusAdj != 0) {
-            score += castBonusAdj;
         }
         return score;
     }
@@ -746,39 +673,11 @@ final class ManaPaymentExecution {
                 .collect(Collectors.toList());
     }
 
-    static int getFilterActivationCMC(final SpellAbility filter) {
-        if (filter.getPayCosts() == null || !filter.getPayCosts().hasManaCost()) {
-            return 0;
-        }
-        final CostPartMana costMana = filter.getPayCosts().getCostMana();
-        return costMana == null ? 0 : costMana.getMana().getCMC();
-    }
-
-    /** Mana lost per activation on any-mana filters that produce less than their activation cost (Signpost {2}: any). */
-    static int netNegativeAnyManaFilterLoss(final SpellAbility ma) {
-        if (!ManaFilterConsolidation.isAnyManaConsolidatingFilter(ma) || isNetPositiveConsolidator(ma)) {
-            return 0;
-        }
-        return Math.max(0, getFilterActivationCMC(ma) - ManaFilterConsolidation.getManaProducedAmount(ma));
-    }
-
-    /** Among any-mana filters, prefer lower activation costs ({1} Study Hall over {2} Signpost). */
-    static int compareAnyManaFilterActivationCost(final SpellAbility a, final SpellAbility b) {
-        if (!ManaFilterConsolidation.isAnyManaConsolidatingFilter(a) || !ManaFilterConsolidation.isAnyManaConsolidatingFilter(b)) {
-            return 0;
-        }
-        final int c1 = getFilterActivationCMC(a);
-        final int c2 = getFilterActivationCMC(b);
-        if (c1 != c2) {
-            return Integer.compare(c1, c2);
-        }
-        return 0;
-    }
-
     /** Produced mana exceeds the filter's activation cost (e.g. Signet {1} -> {G}{W}). */
     static boolean isNetPositiveConsolidator(final SpellAbility filter) {
         return isConsolidatingCandidate(filter) && ManaFilterConsolidation.hasManaActivationCost(filter)
-                && ManaFilterConsolidation.getManaProducedAmount(filter) > getFilterActivationCMC(filter);
+                && ManaFilterConsolidation.getManaProducedAmount(filter)
+                        > ManaFilterConsolidation.getFilterActivationCMC(filter);
     }
 
     /**
@@ -1233,12 +1132,6 @@ final class ManaPaymentExecution {
     }
 
     /** Match {@link #sortFreeSourcesForNestedActivation} / {@link #chooseManaAbility} generic ranking. */
-    /** Cast-bonus tie-break; full logic lives in registration PR. */
-    static int castBonusPreferenceAdjustment(final SpellAbility manaAb, final SpellAbility spellBeingPaid,
-            final Player ai) {
-        return 0;
-    }
-
     static SpellAbility chooseManaAbilityForShard(final ManaCostBeingPaid cost, final SpellAbility sa,
             final Player ai, final ManaCostShard toPay, Collection<SpellAbility> maList, final boolean checkCosts,
             final boolean test, final ManaPaymentContext ctx) {
@@ -1355,10 +1248,6 @@ final class ManaPaymentExecution {
             ranked = Lists.newArrayList(valid);
             final ManaAbilitySort.GenericColorPreference pref = ManaAbilitySort.resolveGenericColorPreference(ai, sa);
             ranked.sort((a, b) -> ManaAbilitySort.compareGenericCandidatesForPayment(a, b, pref, cost.getGenericManaAmount(), sa, ai));
-        } else if (toPay != null && !toPay.isPhyrexian() && toPay != ManaCostShard.COLORLESS) {
-            ranked = Lists.newArrayList(valid);
-            ranked.sort((a, b) -> castBonusPreferenceAdjustment(a, sa, ai)
-                    - castBonusPreferenceAdjustment(b, sa, ai));
         }
 
         for (final SpellAbility cand : capProbeCandidates(ranked)) {
@@ -1385,12 +1274,9 @@ final class ManaPaymentExecution {
             }
             if (impact.efficiencyScore < bestEfficiency
                     || (impact.efficiencyScore == bestEfficiency && best != null
-                            && ((toPay == ManaCostShard.GENERIC || toPay == ManaCostShard.X)
-                                    && ManaAbilitySort.compareGenericCandidatesForPayment(cand, best,
-                                            ManaAbilitySort.resolveGenericColorPreference(ai, sa), cost.getGenericManaAmount(), sa, ai) < 0)
-                            || (toPay != null && !toPay.isGeneric() && toPay != ManaCostShard.X
-                                    && castBonusPreferenceAdjustment(cand, sa, ai)
-                                            < castBonusPreferenceAdjustment(best, sa, ai)))) {
+                            && (toPay == ManaCostShard.GENERIC || toPay == ManaCostShard.X)
+                            && ManaAbilitySort.compareGenericCandidatesForPayment(cand, best,
+                                    ManaAbilitySort.resolveGenericColorPreference(ai, sa), cost.getGenericManaAmount(), sa, ai) < 0)) {
                 bestEfficiency = impact.efficiencyScore;
                 best = cand;
             }
@@ -1483,7 +1369,7 @@ final class ManaPaymentExecution {
                 return 1;
             }
         }
-        if (requiresTappingOtherCreatureForMana(chosen)) {
+        if (ManaFilterConsolidation.requiresTappingOtherCreatureForMana(chosen)) {
             // The tapped creature is consumed too, but collectCardsConsumedByPayment only tracks
             // nested taps for filters with mana activation costs.
             return consumed.size() + 1;
@@ -1989,7 +1875,7 @@ final class ManaPaymentExecution {
             final ManaPaymentContext ctx) {
         final Set<Card> sources = new HashSet<>();
         for (Card c : ai.getCardsIn(ZoneType.Battlefield)) {
-            if (isDisposableManaCard(c) || c == exclude) {
+            if (ManaFilterConsolidation.isDisposableManaCard(c) || c == exclude) {
                 continue;
             }
             for (SpellAbility other : ComputerUtilMana.getAIPlayableMana(c, ctx)) {
@@ -2428,7 +2314,7 @@ final class ManaPaymentExecution {
         if (hasTapCost(filterAb)) {
             AiCardMemory.rememberCard(ai, filterAb.getHostCard(), MemorySet.PAYS_TAP_COST);
         }
-        if (hasManaCost(filterAb)) {
+        if (filterAb.getPayCosts() != null && filterAb.getPayCosts().hasManaCost()) {
             if (test) {
                 final CardCollection nestedTaps = planOut == null ? null : new CardCollection();
                 if (!simulateNestedActivationCost(filterAb, sa, ai,
