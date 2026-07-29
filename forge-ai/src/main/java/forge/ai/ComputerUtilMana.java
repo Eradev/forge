@@ -856,6 +856,10 @@ public class ComputerUtilMana {
         List<SpellAbility> paymentList = Lists.newArrayList();
         final ManaPool manapool = ai.getManaPool();
 
+        // Snapshot before any pool spend so test rollback restores floating mana.
+        final List<Mana> poolSnapshotAtStart = test && ctx.isOutermost()
+                ? ManaPaymentExecution.snapshotPool(manapool) : null;
+
         // Apply color/type conversion matrix if necessary (already done via autopay)
         if (ai.getControllingPlayer() == null) {
             manapool.restoreColorReplacements();
@@ -880,6 +884,7 @@ public class ComputerUtilMana {
             ManaPaymentTracer.logResult(test, true, "  result: PAID (pool)", ctx);
             if (test) {
                 collectPlanSources(planOut, manaSpentToPay, paymentList);
+                // payManaCostFromPool already refunds when fully paid in test mode
             }
             // paid all from floating mana
             return manaSpentToPay;
@@ -895,8 +900,6 @@ public class ComputerUtilMana {
             testDepositedSurplus = ctx.testDepositedSurplus != null ? ctx.testDepositedSurplus : new ArrayList<>();
             ctx.testDepositedSurplus = testDepositedSurplus;
         }
-
-        List<Mana> poolSnapshotAtStart = test && ctx.isOutermost() ? ManaPaymentExecution.snapshotPool(manapool) : null;
 
         if (!ManaPaymentExecution.runPaymentLoop(cost, sa, ai, test, checkPlayable, effect, sourcesForShards,
                 manaSpentToPay, testDepositedSurplus, paymentList, manapool, planOut, hasConverge, purePhyrexian, ctx)) {
@@ -1306,7 +1309,9 @@ public class ComputerUtilMana {
     static ManaCostShard getNextShardToPay(ManaCostBeingPaid cost, Multimap<ManaCostShard, SpellAbility> sourcesForShards) {
         List<ManaCostShard> shardsToPay = Lists.newArrayList(cost.getDistinctShards());
         // optimize order so that the shards with less available sources are considered first
-        shardsToPay.sort(Comparator.comparingInt(shard -> sourcesForShards.get(shard).size()));
+        if (sourcesForShards != null) {
+            shardsToPay.sort(Comparator.comparingInt(shard -> sourcesForShards.get(shard).size()));
+        }
         // mind the priorities
         // * Pay mono-colored first
         // * Pay 2/C with matching colors
