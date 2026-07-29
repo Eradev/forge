@@ -890,7 +890,35 @@ public class ComputerUtilMana {
             return manaSpentToPay;
         }
 
-        int phyLifeToPay = 2;
+        // Optimistic total-mana gate: skip shard planning when clearly short on quantity.
+        // Overcounts nested-cost producers (signets/filters); only fails when have < need.
+        if (!cost.containsOnlyPhyrexianMana()) {
+            int need = cost.getConvertedManaCost();
+            if (cost.containsPhyrexianMana()) {
+                for (final ManaCostShard shard : cost.getDistinctShards()) {
+                    if (shard.isPhyrexian()) {
+                        need -= cost.getUnpaidShards(shard);
+                    }
+                }
+            }
+            if (need > 0) {
+                final int have = estimateMaxManaAvailable(ai, checkPlayable, ctx);
+                if (have < need) {
+                    ManaPaymentTracer.logResult(test, false, "  result: FAILED (insufficient total mana "
+                            + have + "<" + need + ") for " + ManaPaymentTracer.manaPaymentSpellLabel(sa), ctx);
+                    manapool.refundMana(manaSpentToPay);
+                    if (test) {
+                        if (poolSnapshotAtStart != null) {
+                            ManaPaymentExecution.restorePool(ai, poolSnapshotAtStart);
+                        }
+                    } else {
+                        sa.setSkip(true);
+                    }
+                    return null;
+                }
+            }
+        }
+
         boolean purePhyrexian = cost.containsOnlyPhyrexianMana();
         boolean hasConverge = sa.getHostCard().hasConverge();
         ListMultimap<ManaCostShard, SpellAbility> sourcesForShards = getSourcesForShards(cost, sa, ai, test, checkPlayable, hasConverge, ctx);
@@ -1573,6 +1601,53 @@ public class ComputerUtilMana {
         }
 
         return availableMana;
+    }
+
+    /**
+     * Optimistic upper bound on mana available right now: remaining floating pool plus
+     * max production per unique mana-source host (battlefield and hand via
+     * {@link #getOrBuildManaAbilityMap}), including {@code TapsForMana} bonuses from
+     * {@link #predictManafromSpellAbility}.
+     * <p>
+     * Safe for fail-fast only — does not subtract activation costs, so filters/signets may
+     * be overcounted. Never use this alone to assert a cost is payable.
+     */
+    static int estimateMaxManaAvailable(final Player ai, final boolean checkPlayable,
+            final ManaPaymentContext ctx) {
+        int available = ai.getManaPool().totalMana();
+        final ListMultimap<Integer, SpellAbility> map = getOrBuildManaAbilityMap(ai, checkPlayable, ctx);
+        final Map<Card, Integer> maxByHost = new HashMap<>();
+        for (final SpellAbility ma : map.values()) {
+            final Card host = ma.getHostCard();
+            if (host == null) {
+                continue;
+            }
+            ma.setActivatingPlayer(ai);
+            if (checkPlayable && !ma.canPlay()) {
+                continue;
+            }
+            final int produced = optimisticManaFromAbility(ma, ai);
+            maxByHost.merge(host, produced, Math::max);
+        }
+        for (final int produced : maxByHost.values()) {
+            available += produced;
+        }
+        return available;
+    }
+
+    /** Max of declared generation and predicted tap output (includes TapsForMana triggers). */
+    private static int optimisticManaFromAbility(final SpellAbility ma, final Player ai) {
+        int fromAmount = ma.amountOfManaGenerated(true);
+        final String predicted = predictManafromSpellAbility(ma, ai, ManaCostShard.GENERIC);
+        int fromPredicted = 0;
+        if (StringUtils.isNotBlank(predicted)) {
+            for (final String part : TextUtil.split(predicted.trim(), ' ')) {
+                if (StringUtils.isNotBlank(part)) {
+                    fromPredicted++;
+                }
+            }
+        }
+        return Math.max(fromAmount, fromPredicted);
     }
 
     public static CardCollection getAvailableManaSources(final Player ai, final boolean checkPlayable) {
