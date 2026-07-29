@@ -919,6 +919,18 @@ public class ComputerUtilMana {
             }
         }
 
+        // Quick-test early success: free reusable sources clearly cover CMC + colored pips.
+        if (test && !ctx.paymentPromptPreview && ctx.isOutermost()
+                && isClearlyPayableFromFreeSources(cost, sa, ai, checkPlayable)) {
+            ManaPaymentTracer.logResult(test, true, "  result: PAID (quick sufficiency) for "
+                    + ManaPaymentTracer.manaPaymentSpellLabel(sa), ctx);
+            manapool.refundMana(manaSpentToPay);
+            if (poolSnapshotAtStart != null) {
+                ManaPaymentExecution.restorePool(ai, poolSnapshotAtStart);
+            }
+            return manaSpentToPay;
+        }
+
         boolean purePhyrexian = cost.containsOnlyPhyrexianMana();
         boolean hasConverge = sa.getHostCard().hasConverge();
         ListMultimap<ManaCostShard, SpellAbility> sourcesForShards = getSourcesForShards(cost, sa, ai, test, checkPlayable, hasConverge, ctx);
@@ -1559,59 +1571,189 @@ public class ComputerUtilMana {
         return getAvailableManaEstimate(p, true);
     }
     public static int getAvailableManaEstimate(final Player p, final boolean checkPlayable) {
-        int availableMana = 0;
-
-        final List<Card> srcs = CardLists.filter(p.getCardsIn(ZoneType.Battlefield), c -> !c.getManaAbilities().isEmpty());
-
-        int maxProduced = 0;
-        int producedWithCost = 0;
-        boolean hasSourcesWithNoManaCost = false;
-
-        for (Card src : srcs) {
-            maxProduced = 0;
-
-            for (SpellAbility ma : src.getManaAbilities()) {
-                ma.setActivatingPlayer(p);
-                if (!checkPlayable || ma.canPlay()) {
-                    int costsToActivate = ma.getPayCosts().getCostMana() != null ? ma.getPayCosts().getCostMana().convertAmount() : 0;
-                    int producedMana = ma.getParamOrDefault("Produced", "").split(" ").length;
-                    int producedAmount = AbilityUtils.calculateAmount(src, ma.getParamOrDefault("Amount", "1"), ma);
-
-                    int producedTotal = producedMana * producedAmount - costsToActivate;
-
-                    if (costsToActivate > 0) {
-                        producedWithCost += producedTotal;
-                    } else if (!hasSourcesWithNoManaCost) {
-                        hasSourcesWithNoManaCost = true;
-                    }
-
-                    if (producedTotal > maxProduced) {
-                        maxProduced = producedTotal;
-                    }
-                }
-            }
-
-            availableMana += maxProduced;
-        }
-
-        availableMana += p.getManaPool().totalMana();
-
-        if (producedWithCost > 0 && !hasSourcesWithNoManaCost) {
-            availableMana -= producedWithCost; // probably can't activate them, no other mana available
-        }
-
-        return availableMana;
+        return estimateAvailableMana(p, checkPlayable).total;
     }
 
     /**
-     * Optimistic upper bound on mana available right now: remaining floating pool plus
-     * max production per unique mana-source host (battlefield and hand via
-     * {@link #getOrBuildManaAbilityMap}), including {@code TapsForMana} bonuses from
-     * {@link #predictManafromSpellAbility}.
-     * <p>
-     * Safe for fail-fast only — does not subtract activation costs, so filters/signets may
-     * be overcounted. Never use this alone to assert a cost is payable.
+     * Per-color mana availability from a cheap battlefield scan (same loop as
+     * {@link #getAvailableManaEstimate}). Dual/any sources add to each producible color bucket and
+     * once to {@link ManaAvailabilityEstimate#total}; use {@link ManaAvailabilityEstimate#canCover}
+     * so dual overcount cannot false-pay multicolor costs.
      */
+    public static ManaAvailabilityEstimate estimateAvailableMana(final Player p) {
+        return estimateAvailableMana(p, true);
+    }
+
+    public static ManaAvailabilityEstimate estimateAvailableMana(final Player p, final boolean checkPlayable) {
+        final int[] colors = new int[5]; // WUBRG
+        int colorless = 0;
+        int total = 0;
+        int producedWithCost = 0;
+        boolean hasSourcesWithNoManaCost = false;
+
+        final List<Card> srcs = CardLists.filter(p.getCardsIn(ZoneType.Battlefield), c -> !c.getManaAbilities().isEmpty());
+        for (final Card src : srcs) {
+            int maxProduced = 0;
+            String bestProduced = "";
+            int bestCost = 0;
+
+            for (final SpellAbility ma : src.getManaAbilities()) {
+                ma.setActivatingPlayer(p);
+                if (checkPlayable && !ma.canPlay()) {
+                    continue;
+                }
+                final int costsToActivate = ma.getPayCosts().getCostMana() != null
+                        ? ma.getPayCosts().getCostMana().convertAmount() : 0;
+                final String produced = ma.getParamOrDefault("Produced", "");
+                final int producedMana = produced.isEmpty() ? 0 : produced.split(" ").length;
+                final int producedAmount = AbilityUtils.calculateAmount(src, ma.getParamOrDefault("Amount", "1"), ma);
+                final int producedTotal = producedMana * producedAmount - costsToActivate;
+
+                if (costsToActivate > 0) {
+                    producedWithCost += Math.max(0, producedTotal);
+                } else {
+                    hasSourcesWithNoManaCost = true;
+                }
+                if (producedTotal > maxProduced) {
+                    maxProduced = producedTotal;
+                    bestProduced = produced;
+                    bestCost = costsToActivate;
+                }
+            }
+
+            if (maxProduced <= 0) {
+                continue;
+            }
+            total += maxProduced;
+            // Color buckets: only free activations (activation-costed filters inflate falsely).
+            if (bestCost == 0) {
+                addProducedToColorBuckets(colors, bestProduced, maxProduced);
+                if (producesColorlessSymbol(bestProduced)) {
+                    colorless += maxProduced;
+                }
+            }
+        }
+
+        final ManaPool pool = p.getManaPool();
+        total += pool.totalMana();
+        for (int i = 0; i < MagicColor.WUBRG.length; i++) {
+            colors[i] += pool.getAmountOfColor(MagicColor.WUBRG[i]);
+        }
+        colorless += pool.getAmountOfColor((byte) ManaAtom.COLORLESS);
+
+        if (producedWithCost > 0 && !hasSourcesWithNoManaCost) {
+            total -= producedWithCost; // probably can't activate them, no other mana available
+        }
+
+        return new ManaAvailabilityEstimate(Math.max(0, total), colors, colorless);
+    }
+
+    private static void addProducedToColorBuckets(final int[] colors, final String produced, final int amount) {
+        if (StringUtils.isBlank(produced) || amount <= 0) {
+            return;
+        }
+        boolean any = false;
+        final boolean[] hit = new boolean[5];
+        for (final String part : produced.split(" ")) {
+            if ("Any".equalsIgnoreCase(part) || part.startsWith("ComboAny")) {
+                any = true;
+                break;
+            }
+            if ("Combo".equals(part)) {
+                continue;
+            }
+            for (int i = 0; i < MagicColor.WUBRG.length; i++) {
+                if (MagicColor.toShortString(MagicColor.WUBRG[i]).equals(part)
+                        || MagicColor.toLongString(MagicColor.WUBRG[i]).equalsIgnoreCase(part)) {
+                    hit[i] = true;
+                }
+            }
+        }
+        // Combo lands: "Combo W U" → tokens Combo, W, U
+        if (any) {
+            for (int i = 0; i < 5; i++) {
+                colors[i] += amount;
+            }
+            return;
+        }
+        for (int i = 0; i < 5; i++) {
+            if (hit[i]) {
+                colors[i] += amount;
+            }
+        }
+    }
+
+    private static boolean producesColorlessSymbol(final String produced) {
+        if (StringUtils.isBlank(produced)) {
+            return false;
+        }
+        for (final String part : produced.split(" ")) {
+            if ("C".equals(part)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Cheap mana availability table: total CMC capacity plus per-color / colorless pip capacity.
+     */
+    public static final class ManaAvailabilityEstimate {
+        public final int total;
+        /** WUBRG pip capacity (dual/any sources counted in each producible color). */
+        public final int[] colors;
+        public final int colorless;
+
+        ManaAvailabilityEstimate(final int total, final int[] colors, final int colorless) {
+            this.total = total;
+            this.colors = colors;
+            this.colorless = colorless;
+        }
+
+        /**
+         * True when this estimate clearly covers {@code cost}: each mono colored/{@code C} pip
+         * fits its bucket and total CMC fits {@link #total}. Dual overcount is blocked by the
+         * total check. Returns false for complex costs (hybrid, snow, Phyrexian, Converge).
+         */
+        public boolean canCover(final ManaCostBeingPaid cost, final SpellAbility sa) {
+            if (cost == null || costTooComplexForQuickSufficiency(cost, sa)) {
+                return false;
+            }
+            int needGeneric = cost.getGenericManaAmount();
+            int needColorless = cost.getUnpaidShards(ManaCostShard.COLORLESS);
+            int needColored = 0;
+            for (final ManaCostShard shard : cost.getDistinctShards()) {
+                if (!shard.isMonoColor() || shard.isPhyrexian() || shard.isOr2Generic()) {
+                    continue;
+                }
+                final int need = cost.getUnpaidShards(shard);
+                if (need <= 0) {
+                    continue;
+                }
+                final byte mask = shard.getColorMask();
+                boolean matched = false;
+                for (int i = 0; i < MagicColor.WUBRG.length; i++) {
+                    if (mask == MagicColor.WUBRG[i]) {
+                        if (need > colors[i]) {
+                            return false;
+                        }
+                        needColored += need;
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!matched) {
+                    return false;
+                }
+            }
+            if (needColorless > colorless) {
+                return false;
+            }
+            return needColored + needColorless + needGeneric <= total;
+        }
+    }
+
+    /** Optimistic upper bound including hand sources — fail-fast only (may overcount filters). */
     static int estimateMaxManaAvailable(final Player ai, final boolean checkPlayable,
             final ManaPaymentContext ctx) {
         int available = ai.getManaPool().totalMana();
@@ -1648,6 +1790,38 @@ public class ComputerUtilMana {
             }
         }
         return Math.max(fromAmount, fromPredicted);
+    }
+
+    /**
+     * Quick feasibility via {@link #estimateAvailableMana} color table — no shard simulation.
+     */
+    static boolean isClearlyPayableFromFreeSources(final ManaCostBeingPaid cost, final SpellAbility sa,
+            final Player ai, final boolean checkPlayable) {
+        if (cost == null || sa == null || ai == null) {
+            return false;
+        }
+        return estimateAvailableMana(ai, checkPlayable).canCover(cost, sa);
+    }
+
+    private static boolean costTooComplexForQuickSufficiency(final ManaCostBeingPaid cost, final SpellAbility sa) {
+        if (sa != null && sa.getHostCard() != null && sa.getHostCard().hasConverge()) {
+            return true;
+        }
+        if (cost.containsPhyrexianMana()) {
+            return true;
+        }
+        for (final ManaCostShard shard : cost.getDistinctShards()) {
+            if (cost.getUnpaidShards(shard) <= 0) {
+                continue;
+            }
+            if (shard.isSnow() || shard.isOr2Generic() || shard.isPhyrexian()) {
+                return true;
+            }
+            if (!shard.isGeneric() && shard != ManaCostShard.COLORLESS && !shard.isMonoColor()) {
+                return true; // hybrid
+            }
+        }
+        return false;
     }
 
     public static CardCollection getAvailableManaSources(final Player ai, final boolean checkPlayable) {
