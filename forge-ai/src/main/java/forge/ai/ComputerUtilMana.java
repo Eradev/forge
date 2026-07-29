@@ -4,7 +4,6 @@ import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Multimap;
-import com.google.common.collect.MultimapBuilder;
 import forge.ai.AiCardMemory.MemorySet;
 import forge.ai.ability.AnimateAi;
 import forge.card.ColorSet;
@@ -883,7 +882,7 @@ public class ComputerUtilMana {
                 collectPlanSources(planOut, manaSpentToPay, paymentList);
             }
             // paid all from floating mana
-            return paymentList;
+            return manaSpentToPay;
         }
 
         int phyLifeToPay = 2;
@@ -940,7 +939,7 @@ public class ComputerUtilMana {
             resetPayment(paymentList);
         }
 
-        return paymentList;
+        return manaSpentToPay;
     }
 
     private static void resetPayment(List<SpellAbility> payments) {
