@@ -761,4 +761,48 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertFalse("Study Hall should not be used for a single {W}",
                 sources.anyMatch(c -> "Study Hall".equals(c.getName())));
     }
+
+    // Quantity gate: clearly short on total mana fails without needing a full shard loop success path.
+    @Test
+    public void failsWhenTotalManaInsufficient() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCards("Forest", 2, p);
+        Card spell = addCardToZone("Omniscience", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertFalse("2 Forests cannot pay {7}{U}{U}{U}",
+                canAutoPay(game, p, cost("7 U U U"), sa));
+    }
+
+    // Pure generic: spend colorless land before a colored basic (unless hand needs dedicated {C}).
+    @Test
+    public void prefersReliquaryTowerOverPlainsForGeneric() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Reliquary Tower", p);
+        addCard("Plains", p);
+        Card spell = addCardToZone("Sol Ring", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("1"), sa));
+
+        CardCollection sources = predictedManaSources(game, p, cost("1"), sa);
+        AssertJUnit.assertTrue("Reliquary Tower should pay {1}",
+                sources.anyMatch(c -> "Reliquary Tower".equals(c.getName())));
+        AssertJUnit.assertFalse("Plains should be saved",
+                sources.anyMatch(c -> "Plains".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Reliquary Tower"));
+        AssertJUnit.assertEquals(0, countTapped(game, "Plains"));
+    }
 }
