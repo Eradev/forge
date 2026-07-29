@@ -890,8 +890,7 @@ public class ComputerUtilMana {
             return manaSpentToPay;
         }
 
-        // Optimistic total-mana gate: skip shard planning when clearly short on quantity.
-        // Overcounts nested-cost producers (signets/filters); only fails when have < need.
+        // Cheap BF estimate first — defer full mana-ability map until shard simulation is needed.
         if (!cost.containsOnlyPhyrexianMana()) {
             int need = cost.getConvertedManaCost();
             if (cost.containsPhyrexianMana()) {
@@ -901,11 +900,27 @@ public class ComputerUtilMana {
                     }
                 }
             }
-            if (need > 0) {
-                final int have = estimateMaxManaAvailable(ai, checkPlayable, ctx);
-                if (have < need) {
+            final ManaAvailabilityEstimate estimate = estimateAvailableMana(ai, checkPlayable);
+
+            // Quick-test early success: color table covers CMC + colored pips.
+            if (test && !ctx.paymentPromptPreview && ctx.isOutermost() && estimate.canCover(cost, sa)) {
+                ManaPaymentTracer.logResult(test, true, "  result: PAID (quick sufficiency) for "
+                        + ManaPaymentTracer.manaPaymentSpellLabel(sa), ctx);
+                manapool.refundMana(manaSpentToPay);
+                if (poolSnapshotAtStart != null) {
+                    ManaPaymentExecution.restorePool(ai, poolSnapshotAtStart);
+                }
+                return manaSpentToPay;
+            }
+
+            // Fail-fast when even optimistic total (map + TapsForMana) cannot cover CMC.
+            // Cheap estimate undercounts ProduceMana/TapsForMana, so only after a short cheap
+            // total (and no hand mana) do we build the map for the optimistic check.
+            if (need > 0 && estimate.total < need && !handHasManaAbility(ai)) {
+                final int maxAvailable = estimateMaxManaAvailable(ai, checkPlayable, ctx);
+                if (maxAvailable < need) {
                     ManaPaymentTracer.logResult(test, false, "  result: FAILED (insufficient total mana "
-                            + have + "<" + need + ") for " + ManaPaymentTracer.manaPaymentSpellLabel(sa), ctx);
+                            + maxAvailable + "<" + need + ") for " + ManaPaymentTracer.manaPaymentSpellLabel(sa), ctx);
                     manapool.refundMana(manaSpentToPay);
                     if (test) {
                         if (poolSnapshotAtStart != null) {
@@ -917,18 +932,6 @@ public class ComputerUtilMana {
                     return null;
                 }
             }
-        }
-
-        // Quick-test early success: free reusable sources clearly cover CMC + colored pips.
-        if (test && !ctx.paymentPromptPreview && ctx.isOutermost()
-                && isClearlyPayableFromFreeSources(cost, sa, ai, checkPlayable)) {
-            ManaPaymentTracer.logResult(test, true, "  result: PAID (quick sufficiency) for "
-                    + ManaPaymentTracer.manaPaymentSpellLabel(sa), ctx);
-            manapool.refundMana(manaSpentToPay);
-            if (poolSnapshotAtStart != null) {
-                ManaPaymentExecution.restorePool(ai, poolSnapshotAtStart);
-            }
-            return manaSpentToPay;
         }
 
         boolean purePhyrexian = cost.containsOnlyPhyrexianMana();
@@ -1753,23 +1756,17 @@ public class ComputerUtilMana {
         }
     }
 
-    /** Optimistic upper bound including hand sources — fail-fast only (may overcount filters). */
+    /** Optimistic upper bound including hand sources (map already filtered playable). */
     static int estimateMaxManaAvailable(final Player ai, final boolean checkPlayable,
             final ManaPaymentContext ctx) {
         int available = ai.getManaPool().totalMana();
-        final ListMultimap<Integer, SpellAbility> map = getOrBuildManaAbilityMap(ai, checkPlayable, ctx);
         final Map<Card, Integer> maxByHost = new HashMap<>();
-        for (final SpellAbility ma : map.values()) {
+        for (final SpellAbility ma : getOrBuildUniqueManaAbilities(ai, checkPlayable, ctx)) {
             final Card host = ma.getHostCard();
             if (host == null) {
                 continue;
             }
-            ma.setActivatingPlayer(ai);
-            if (checkPlayable && !ma.canPlay()) {
-                continue;
-            }
-            final int produced = optimisticManaFromAbility(ma, ai);
-            maxByHost.merge(host, produced, Math::max);
+            maxByHost.merge(host, optimisticManaFromAbility(ma, ai), Math::max);
         }
         for (final int produced : maxByHost.values()) {
             available += produced;
@@ -1792,15 +1789,13 @@ public class ComputerUtilMana {
         return Math.max(fromAmount, fromPredicted);
     }
 
-    /**
-     * Quick feasibility via {@link #estimateAvailableMana} color table — no shard simulation.
-     */
-    static boolean isClearlyPayableFromFreeSources(final ManaCostBeingPaid cost, final SpellAbility sa,
-            final Player ai, final boolean checkPlayable) {
-        if (cost == null || sa == null || ai == null) {
-            return false;
+    private static boolean handHasManaAbility(final Player ai) {
+        for (final Card c : ai.getCardsIn(ZoneType.Hand)) {
+            if (c != null && !c.getManaAbilities().isEmpty()) {
+                return true;
+            }
         }
-        return estimateAvailableMana(ai, checkPlayable).canCover(cost, sa);
+        return false;
     }
 
     private static boolean costTooComplexForQuickSufficiency(final ManaCostBeingPaid cost, final SpellAbility sa) {
@@ -1985,17 +1980,34 @@ public class ComputerUtilMana {
     static ListMultimap<Integer, SpellAbility> getOrBuildManaAbilityMap(final Player ai,
             final boolean checkPlayable, final ManaPaymentContext ctx) {
         if (ctx == null) {
-            return groupSourcesByManaColor(ai, checkPlayable, null);
+            return groupSourcesByManaColor(ai, checkPlayable, null, null);
+        }
+        getOrBuildUniqueManaAbilities(ai, checkPlayable, ctx);
+        return ctx.caches.manaAbilityMap;
+    }
+
+    /**
+     * Unique mana abilities (one per ability, not per color bucket). Builds and caches the color
+     * multimap as a side effect when {@code ctx} is non-null.
+     */
+    static List<SpellAbility> getOrBuildUniqueManaAbilities(final Player ai, final boolean checkPlayable,
+            final ManaPaymentContext ctx) {
+        if (ctx == null) {
+            final List<SpellAbility> unique = new ArrayList<>();
+            groupSourcesByManaColor(ai, checkPlayable, null, unique);
+            return unique;
         }
         final long fp = paymentPlanReservationFingerprint(ai);
-        final ListMultimap<Integer, SpellAbility> cached = ctx.caches.manaAbilityMap;
-        if (cached != null && ctx.caches.manaAbilityMapKey != null && ctx.caches.manaAbilityMapKey == fp) {
-            return cached;
+        if (ctx.caches.manaAbilityMap != null && ctx.caches.uniqueManaAbilities != null
+                && ctx.caches.manaAbilityMapKey != null && ctx.caches.manaAbilityMapKey == fp) {
+            return ctx.caches.uniqueManaAbilities;
         }
-        final ListMultimap<Integer, SpellAbility> map = groupSourcesByManaColor(ai, checkPlayable, ctx);
+        final List<SpellAbility> unique = new ArrayList<>();
+        final ListMultimap<Integer, SpellAbility> map = groupSourcesByManaColor(ai, checkPlayable, ctx, unique);
         ctx.caches.manaAbilityMap = map;
+        ctx.caches.uniqueManaAbilities = unique;
         ctx.caches.manaAbilityMapKey = fp;
-        return map;
+        return unique;
     }
 
     /** Fingerprint reserved / tapped mana sources so nested activation dry-runs can be cached per plan. */
@@ -2048,13 +2060,14 @@ public class ComputerUtilMana {
     }
 
     private static ListMultimap<Integer, SpellAbility> groupSourcesByManaColor(final Player ai, boolean checkPlayable,
-            final ManaPaymentContext ctx) {
+            final ManaPaymentContext ctx, final List<SpellAbility> uniqueOut) {
         final ListMultimap<Integer, SpellAbility> manaMap = ArrayListMultimap.create();
         final Game game = ai.getGame();
 
         for (final Card sourceCard : getAvailableManaSources(ai, checkPlayable, ctx)) {
             for (final SpellAbility m : getAIPlayableMana(sourceCard, ctx)) {
                 m.setActivatingPlayer(ai);
+                // Per-ability canPlay: card may be included because a sibling ability is playable.
                 if (checkPlayable && !m.canPlay()) {
                     continue;
                 }
@@ -2073,6 +2086,9 @@ public class ComputerUtilMana {
                 }
 
                 manaMap.put(ManaAtom.GENERIC, m);
+                if (uniqueOut != null) {
+                    uniqueOut.add(m);
+                }
 
                 forEachActiveManaLink(m, ai, null, false,
                         (root, tail, mp) -> {
