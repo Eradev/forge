@@ -326,9 +326,8 @@ public final class CastabilityProbe {
     private static int computeAvailableManaAfterReservation(final Player ai, final Set<Card> reserved,
             final ManaPaymentContext ctx) {
         int available = ai.getManaPool().totalMana();
-        final ListMultimap<Integer, SpellAbility> map = ComputerUtilMana.getOrBuildManaAbilityMap(ai, true, ctx);
         final Set<Card> seenHosts = new HashSet<>();
-        for (final SpellAbility ma : map.values()) {
+        for (final SpellAbility ma : ComputerUtilMana.getOrBuildUniqueManaAbilities(ai, true, ctx)) {
             final Card host = ma.getHostCard();
             if (host == null || seenHosts.contains(host)) {
                 continue;

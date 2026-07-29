@@ -40,6 +40,8 @@ final class ManaPaymentContext {
     static final class ManaPaymentPlanCache {
         ListMultimap<Integer, SpellAbility> manaAbilityMap;
         Long manaAbilityMapKey;
+        /** One entry per mana ability (not per color bucket). Built with {@link #manaAbilityMap}. */
+        List<SpellAbility> uniqueManaAbilities;
         final Map<Card, List<SpellAbility>> playableManaCache = new HashMap<>();
         Long reusableTapLandKey;
         Set<Card> reusableTapLandSet;
