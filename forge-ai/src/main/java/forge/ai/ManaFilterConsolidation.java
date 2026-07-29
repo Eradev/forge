@@ -177,7 +177,7 @@ final class ManaFilterConsolidation {
         return false;
     }
 
-    private static boolean isDisposableManaCard(final Card card) {
+    static boolean isDisposableManaCard(final Card card) {
         if (card == null) {
             return false;
         }
@@ -189,7 +189,7 @@ final class ManaFilterConsolidation {
         return false;
     }
 
-    private static boolean sacrificesOtherPermanentsForMana(final SpellAbility ma) {
+    static boolean sacrificesOtherPermanentsForMana(final SpellAbility ma) {
         final Cost payCosts = ma == null ? null : ma.getPayCosts();
         if (payCosts == null) {
             return false;
@@ -218,7 +218,7 @@ final class ManaFilterConsolidation {
         return false;
     }
 
-    private static boolean isSelfSacrificeCreatureMana(final SpellAbility ma) {
+    static boolean isSelfSacrificeCreatureMana(final SpellAbility ma) {
         if (ma == null) {
             return false;
         }
@@ -239,7 +239,7 @@ final class ManaFilterConsolidation {
         return false;
     }
 
-    private static boolean isCreatureTapType(final String type) {
+    static boolean isCreatureTapType(final String type) {
         if (type == null) {
             return false;
         }
@@ -252,7 +252,7 @@ final class ManaFilterConsolidation {
         return false;
     }
 
-    private static boolean requiresTappingOtherCreatureForMana(final SpellAbility ma) {
+    static boolean requiresTappingOtherCreatureForMana(final SpellAbility ma) {
         if (ma == null || !ma.isManaAbility() || isDisposableManaAbility(ma)) {
             return false;
         }
@@ -284,7 +284,7 @@ final class ManaFilterConsolidation {
         return false;
     }
 
-    private static int getFilterActivationCMC(final SpellAbility filter) {
+    static int getFilterActivationCMC(final SpellAbility filter) {
         if (filter == null || !hasManaActivationCost(filter)) {
             return 0;
         }
@@ -299,16 +299,25 @@ final class ManaFilterConsolidation {
         return costMana.getMana().getCMC();
     }
 
-    private static int netNegativeAnyManaFilterLoss(final SpellAbility ma) {
-        if (!isAnyManaConsolidatingFilter(ma)) {
+    /** Mana lost per activation on any-mana filters that produce less than their activation cost. */
+    static int netNegativeAnyManaFilterLoss(final SpellAbility ma) {
+        if (!isAnyManaConsolidatingFilter(ma) || ManaPaymentExecution.isNetPositiveConsolidator(ma)) {
             return 0;
         }
-        final int produced = getManaProducedAmount(ma);
-        final int activation = getFilterActivationCMC(ma);
-        if (produced > activation) {
+        return Math.max(0, getFilterActivationCMC(ma) - getManaProducedAmount(ma));
+    }
+
+    /** Among any-mana filters, prefer lower activation costs ({1} Study Hall over {2} Signpost). */
+    static int compareAnyManaFilterActivationCost(final SpellAbility a, final SpellAbility b) {
+        if (!isAnyManaConsolidatingFilter(a) || !isAnyManaConsolidatingFilter(b)) {
             return 0;
         }
-        return Math.max(0, activation - produced);
+        final int c1 = getFilterActivationCMC(a);
+        final int c2 = getFilterActivationCMC(b);
+        if (c1 != c2) {
+            return Integer.compare(c1, c2);
+        }
+        return 0;
     }
 
     /** Lower score is better. Used when building per-host rankings for sortManaAbilities. */
