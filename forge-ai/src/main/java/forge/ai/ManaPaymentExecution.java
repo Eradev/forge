@@ -1936,7 +1936,7 @@ final class ManaPaymentExecution {
             return false;
         }
         if (ctx != null) {
-            for (final SpellAbility ma : ComputerUtilMana.getOrBuildManaAbilityMap(ai, true, ctx).values()) {
+            for (final SpellAbility ma : ComputerUtilMana.getOrBuildUniqueManaAbilities(ai, true, ctx)) {
                 if (isCurrentlyAvailableForNestedActivation(ai, ma, filterHost)
                         && !ManaFilterConsolidation.isDisposableManaAbility(ma)) {
                     return true;
