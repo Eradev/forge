@@ -127,7 +127,6 @@ ScryfallCode=NEC
 119 U Hunter's Insight @Jim Murray
 120 C Kodama's Reach @Sam Burley
 121 U Loyal Guardian @Robbie Trevino
-122 M Nissa, Voice of Zendikar @Raymond Swanland
 123 U Ordeal of Nylea @David Palumbo
 124 R Primeval Protector @Jaime Jones
 125 C Rampant Growth @Steven Belledin
