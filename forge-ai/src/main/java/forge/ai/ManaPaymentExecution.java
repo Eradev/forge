@@ -686,6 +686,10 @@ final class ManaPaymentExecution {
      * {@code genericCostPreservesSignetForHandSpell}). Mono-color hand spells with another producer
      * for that color (e.g. Eternal Witness with a Forest while Sungrass Prairie is on board) do not
      * reserve the consolidator.
+     * <p>
+     * Never reserve when this cost cannot be paid without the consolidator (e.g. Study Hall + Sungrass
+     * Prairie for Equip {@code {2}} with a GW spell in hand) — otherwise the planner spends the free
+     * activator on the first pip and fails.
      */
     static boolean shouldReserveConsolidator(final SpellAbility filter, final SpellAbility sa,
             final ManaCostBeingPaid cost, final Player ai, final ManaPaymentContext ctx) {
@@ -696,7 +700,50 @@ final class ManaPaymentExecution {
         if (coloredUnpaid > 0) {
             return false;
         }
-        return handHasSpellDependingOnConsolidator(filter, sa, ai, ctx);
+        if (!handHasSpellDependingOnConsolidator(filter, sa, ai, ctx)) {
+            return false;
+        }
+        return hasAlternativeCoverageForGenericCost(filter, cost, ai, ctx);
+    }
+
+    /**
+     * True when free (no mana activation cost) sources other than {@code consolidator}'s host can cover
+     * the unpaid pips of a generic-only cost — so the consolidator can be saved for hand/command.
+     */
+    static boolean hasAlternativeCoverageForGenericCost(final SpellAbility consolidator,
+            final ManaCostBeingPaid cost, final Player ai, final ManaPaymentContext ctx) {
+        final int need = countUnpaidPips(cost);
+        if (need <= 0 || ai == null || consolidator == null) {
+            return false;
+        }
+        final Card exclude = consolidator.getHostCard();
+        final ListMultimap<Integer, SpellAbility> map = ComputerUtilMana.getOrBuildManaAbilityMap(ai, true, ctx);
+        final Set<Card> counted = new HashSet<>();
+        int available = 0;
+        for (final SpellAbility ma : map.get(ManaAtom.GENERIC)) {
+            final Card host = ma.getHostCard();
+            if (host == null || host == exclude || counted.contains(host)) {
+                continue;
+            }
+            // Skip paid filters first so Study Hall's {1}:any does not mark the host before {T}:{C}.
+            if (ManaFilterConsolidation.hasManaActivationCost(ma)) {
+                continue;
+            }
+            if (hasTapCost(ma) && (host.isTapped()
+                    || AiCardMemory.isRememberedCard(ai, host, MemorySet.PAYS_TAP_COST))) {
+                continue;
+            }
+            if (AiCardMemory.isRememberedCard(ai, host, MemorySet.PAYS_SAC_COST)
+                    || AiCardMemory.isRememberedCard(ai, host, MemorySet.HELD_MANA_SOURCES_FOR_NEXT_SPELL)) {
+                continue;
+            }
+            counted.add(host);
+            available += Math.max(1, ManaFilterConsolidation.getManaProducedAmount(ma));
+            if (available >= need) {
+                return true;
+            }
+        }
+        return false;
     }
 
     static boolean handHasSpellDependingOnConsolidator(final SpellAbility filter, final SpellAbility sa,
@@ -1103,6 +1150,50 @@ final class ManaPaymentExecution {
             return candidates;
         }
         return candidates.subList(0, CastabilityProbe.CANDIDATE_CAP);
+    }
+
+    /** True when this mana ability's cost includes sacrificing a permanent. */
+    static boolean needsManaSacrificeReservation(final SpellAbility ma) {
+        return ma != null && (ComputerUtilCost.isSacrificeSelfCost(ma.getPayCosts())
+                || ManaFilterConsolidation.sacrificesOtherPermanentsForMana(ma));
+    }
+
+    /**
+     * Whether {@link MemorySet#PAYS_SAC_COST} already holds a valid target for {@code ma}'s sac cost
+     * (so we must not call {@link ComputerUtilCost#checkForManaSacrificeCost} again — it would exclude
+     * that card and may fail with a singleton board).
+     */
+    static boolean hasValidManaSacrificeReservation(final Player ai, final SpellAbility ma) {
+        if (ai == null || ma == null || ma.getPayCosts() == null) {
+            return false;
+        }
+        final Set<Card> remembered = AiCardMemory.getMemorySet(ai, MemorySet.PAYS_SAC_COST);
+        if (remembered == null || remembered.isEmpty()) {
+            return false;
+        }
+        final Card host = ma.getHostCard();
+        for (final CostPart part : ma.getPayCosts().getCostParts()) {
+            if (!(part instanceof CostSacrifice)) {
+                continue;
+            }
+            if (part.payCostFromSource()) {
+                if (!remembered.contains(host)) {
+                    return false;
+                }
+                continue;
+            }
+            boolean found = false;
+            for (final Card c : remembered) {
+                if (c != null && c != host && c.isValid(part.getType().split(";"), ai, host, ma)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -2077,13 +2168,13 @@ final class ManaPaymentExecution {
 
             if (test) {
                 final String manaProduced = ComputerUtilMana.predictManafromSpellAbility(chosen, ai, toPay, nestedCost);
-                ManaPaymentTracer.logNestedTap(true, chosen, manaProduced, filterHost, ctx);
+                ManaPaymentTracer.logNestedTap(true, chosen, manaProduced, filterHost, sa, ctx);
                 final String unused = ComputerUtilMana.payMultipleMana(nestedCost, manaProduced, ai);
                 depositNestedManaSurplus(unused, chosen.getHostCard(), ai, testDepositedSurplus);
                 rememberManaSourceConsumed(ai, chosen);
             } else {
                 ManaPaymentTracer.logNestedTap(false, chosen,
-                        ComputerUtilMana.predictManafromSpellAbility(chosen, ai, toPay, nestedCost), filterHost, ctx);
+                        ComputerUtilMana.predictManafromSpellAbility(chosen, ai, toPay, nestedCost), filterHost, sa, ctx);
                 if (!executeFreeManaSource(chosen, filterAb, ai, nestedCost, effect)) {
                     return false;
                 }
@@ -2222,8 +2313,6 @@ final class ManaPaymentExecution {
         if (combo == null || signet == null) {
             return false;
         }
-        ctx.recordStep(sa, test, "  bank via " + signet.getHostCard() + " -> " + combo.getHostCard()
-                + " (paying " + cost + " for " + ManaPaymentTracer.manaPaymentSpellLabel(sa) + ")");
         return executeSignetThenComboBanking(cost, sa, ai, signet, combo, sourcesForShards, manaSpentToPay,
                 testDepositedSurplus, test, effect, manapool, planOut, paymentList, ctx);
     }
@@ -2344,7 +2433,7 @@ final class ManaPaymentExecution {
             }
             return false;
         }
-        ctx.recordStep(sa, test, "  tap " + filterAb.getHostCard() + " -> "
+        ctx.recordStep(sa, test, "  " + ManaPaymentTracer.formatSourceAction(filterAb, ai) + " -> "
                 + ComputerUtilMana.formatManaProducedForLog(filterAb, ai, ManaCostShard.GENERIC, spellCost)
                 + " (bank for " + ManaPaymentTracer.manaPaymentSpellLabel(sa) + ")");
         if (planOut != null) {
@@ -2510,6 +2599,14 @@ final class ManaPaymentExecution {
             }
             if (ManaFilterConsolidation.isMultiManaComboAbility(saPayment)) {
                 ComputerUtilMana.setComboManaChoice(ai, saPayment, cost);
+            }
+            saPayment.setActivatingPlayer(ai);
+            // Reserve sac targets (Ashnod's / Phyrexian Tower / Petal) before plan logging so the
+            // play-by-play can name the creature — castability probes may have restored memory.
+            if (needsManaSacrificeReservation(saPayment) && !hasValidManaSacrificeReservation(ai, saPayment)
+                    && !ComputerUtilCost.checkForManaSacrificeCost(ai, saPayment.getPayCosts(), saPayment,
+                            saPayment.isTrigger())) {
+                return false;
             }
             final String manaProduced = ComputerUtilMana.formatManaProducedForLog(saPayment, ai, toPay, cost);
             final ManaCostBeingPaid costBefore = new ManaCostBeingPaid(cost);
@@ -2814,7 +2911,8 @@ final class ManaPaymentExecution {
                 final ManaCostBeingPaid beforeSurplus = new ManaCostBeingPaid(cost);
                 spendTestDepositedManaTowardCost(sa, cost, manapool, testDepositedSurplus, manaSpentToPay);
                 if (beforeSurplus.getUnpaidShards().size() != cost.getUnpaidShards().size()) {
-                    ctx.recordStep(sa, test, "  pool pays " + formatShardsPaidDiff(beforeSurplus, cost, ManaCostShard.GENERIC)
+                    // Distinct from real floating-pool spends — surplus is simulated, not in ManaPool.
+                    ctx.recordStep(sa, test, "  Surplus pays " + formatShardsPaidDiff(beforeSurplus, cost, ManaCostShard.GENERIC)
                             + " for " + ManaPaymentTracer.manaPaymentSpellLabel(sa));
                 }
                 if (cost.isPaid()) {
@@ -2829,7 +2927,7 @@ final class ManaPaymentExecution {
                 boolean found = false;
                 for (byte color : ManaAtom.MANATYPES) {
                     if (manapool.tryPayCostWithColor(color, sa, cost, manaSpentToPay)) {
-                        ctx.recordStep(sa, test, "  pool pays " + MagicColor.toShortString(color)
+                        ctx.recordStep(sa, test, "  Pool pays " + MagicColor.toShortString(color)
                                 + " for " + ManaPaymentTracer.manaPaymentSpellLabel(sa));
                         found = true;
                         break;
