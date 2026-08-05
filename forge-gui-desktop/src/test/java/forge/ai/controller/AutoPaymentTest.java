@@ -220,7 +220,7 @@ public class AutoPaymentTest extends SimulationTest {
         game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
         game.getAction().checkStateEffects(true);
 
-        GameSimulator sim = createSimulator(game, p);
+        GameSimulator sim = createSimulator(p);
         int score = sim.simulateSpellAbility(spell.getFirstSpellAbility()).value;
         AssertJUnit.assertTrue(score > 0);
         Game simGame = sim.getSimulatedGameState();
@@ -287,6 +287,244 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals("Plains should be tapped", 1, countTapped(game, "Plains"));
         AssertJUnit.assertEquals("Signet should be tapped", 1, countTapped(game, "Rakdos Signet"));
         AssertJUnit.assertEquals("Cascade Bluffs should be tapped", 1, countTapped(game, "Cascade Bluffs"));
+    }
+
+    @Test
+    public void paymentPlanPreviewIncludesPetalSacrificedForSignetActivation() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        // No free {1} land — Lotus Petal must pay Selesnya Signet's activation.
+        addCard("Selesnya Signet", p);
+        addCard("Lotus Petal", p);
+        Card spell = addCardToZone("Arcus Acolyte", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue("Signet + Petal should pay {G}{W}",
+                canAutoPay(game, p, new ManaCostBeingPaid(spell.getManaCost()), sa));
+
+        CardCollection sources = predictedManaSources(game, p,
+                new ManaCostBeingPaid(spell.getManaCost()), sa);
+        AssertJUnit.assertTrue("Selesnya Signet should be in the payment plan",
+                sources.anyMatch(c -> "Selesnya Signet".equals(c.getName())));
+        AssertJUnit.assertTrue("Lotus Petal should be listed (sac for Signet activation)",
+                sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
+    }
+
+    @Test
+    public void comboGateDoesNotInflateQuickSufficiencyTotal() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        // Boros Guildgate is Produced$ Combo R W — must count as 1 mana, not 3 ("Combo"+"R"+"W").
+        addCard("Plains", p);
+        Card gate = addCard("Boros Guildgate", p);
+        gate.setTapped(false);
+
+        Card spell = addCardToZone("Kalemne, Disciple of Iroas", p, ZoneType.Hand);
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        sa.setActivatingPlayer(p);
+        ManaCostBeingPaid mc = cost("2 W R");
+
+        ComputerUtilMana.ManaAvailabilityEstimate estimate = ComputerUtilMana.estimateAvailableMana(p, true);
+        AssertJUnit.assertEquals("Plains + Guildgate should estimate 2 mana total, not 4+",
+                2, estimate.total);
+        AssertJUnit.assertFalse("Quick sufficiency must not claim {2}{W}{R} is payable from 2 lands",
+                estimate.canCover(mc, sa));
+        AssertJUnit.assertFalse("Full Auto-pay must also reject {2}{W}{R}",
+                canAutoPay(game, p, mc, sa));
+    }
+
+    @Test
+    public void paidManaAbilityDoesNotInflateQuickSufficiencyTotal() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        // Cascading Cataracts: {T}: Add {C}. / {5}, {T}: Add five mana in any combination.
+        // CostPartMana.convertAmount() is always 1 (CostPart default), so a buggy estimate
+        // treats the paid ability as net +4 and claims more mana than the free tap produces.
+        addCard("Island", p);
+        addCard("Forest", p);
+        Card garden = addCard("Temple Garden", p);
+        garden.setTapped(false);
+        Card cataracts = addCard("Cascading Cataracts", p);
+        cataracts.setTapped(false);
+        Card druid = addCard("Harabaz Druid", p);
+        druid.setTapped(false);
+        druid.setSickness(false);
+        addCard("Chasm Guide", p); // second Ally so Druid makes 2
+
+        Card spell = addCardToZone("General Tazri", p, ZoneType.Hand);
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        sa.setActivatingPlayer(p);
+        // Commander-taxed cast of Tazri: {4}{W}+{2} = {6}{W} needs 7; board has 6 (4 lands + Druid 2).
+        ManaCostBeingPaid mc = cost("6 W");
+
+        ComputerUtilMana.ManaAvailabilityEstimate estimate = ComputerUtilMana.estimateAvailableMana(p, true);
+        AssertJUnit.assertEquals("4 lands + Harabaz Druid (2 Allies) should estimate 6, not Cataracts' paid ability",
+                6, estimate.total);
+        AssertJUnit.assertFalse("Quick sufficiency must not claim {6}{W} is payable from 6 mana",
+                estimate.canCover(mc, sa));
+        AssertJUnit.assertFalse("Full Auto-pay must also reject {6}{W}",
+                canAutoPay(game, p, mc, sa));
+    }
+
+    @Test
+    public void emitsPaymentPlanForBattlefieldAbility() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Plains", p);
+        Card sword = addCard("Bonesplitter", p);
+        Card bear = addCard("Grizzly Bears", p);
+        bear.setSickness(false);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        final SpellAbility equip = findSAWithPrefix(sword, "Equip");
+        AssertJUnit.assertNotNull(equip);
+        equip.setActivatingPlayer(p);
+        if (equip.usesTargeting()) {
+            equip.getTargets().add(bear);
+        }
+        ManaCostBeingPaid mc = new ManaCostBeingPaid(equip.getPayCosts().getCostMana().getMana());
+
+        String prevPlan = System.getProperty("forge.debugManaPayment.plan");
+        try {
+            System.setProperty("forge.debugManaPayment.plan", "true");
+            final CardCollection[] sources = new CardCollection[1];
+            p.runWithController(() -> sources[0] = ComputerUtilMana.getManaSourcesToPayCostForPaymentPrompt(
+                    new ManaCostBeingPaid(mc), equip, p, false),
+                    new PlayerControllerAi(game, p, p.getOriginalLobbyPlayer()));
+            AssertJUnit.assertNotNull("Equip Auto preview should succeed", sources[0]);
+            AssertJUnit.assertTrue("Plains should be in Equip payment plan sources",
+                    sources[0].anyMatch(c -> "Plains".equals(c.getName())));
+        } finally {
+            if (prevPlan == null) {
+                System.clearProperty("forge.debugManaPayment.plan");
+            } else {
+                System.setProperty("forge.debugManaPayment.plan", prevPlan);
+            }
+        }
+    }
+
+    // Study Hall {T}:{C} must feed Sungrass Prairie's {1} so GW covers Equip {2}, not spend C on the first pip.
+    @Test
+    public void studyHallFeedsSungrassForEquipTwo() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Study Hall", p);
+        addCard("Sungrass Prairie", p);
+        Card spear = addCard("Shadowspear", p);
+        Card bear = addCard("Grizzly Bears", p);
+        bear.setSickness(false);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        final SpellAbility equip = findSAWithPrefix(spear, "Equip");
+        AssertJUnit.assertNotNull(equip);
+        equip.setActivatingPlayer(p);
+        if (equip.usesTargeting()) {
+            equip.getTargets().add(bear);
+        }
+        ManaCostBeingPaid mc = new ManaCostBeingPaid(equip.getPayCosts().getCostMana().getMana());
+
+        CardCollection sources = predictedManaSources(game, p, new ManaCostBeingPaid(mc), equip);
+        AssertJUnit.assertNotNull("Study Hall + Sungrass should pay Equip {2}", sources);
+        AssertJUnit.assertTrue("Study Hall should tap for Sungrass activation",
+                sources.anyMatch(c -> "Study Hall".equals(c.getName())));
+        AssertJUnit.assertTrue("Sungrass Prairie should produce {G}{W} for {2}",
+                sources.anyMatch(c -> "Sungrass Prairie".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, new ManaCostBeingPaid(mc), equip));
+        AssertJUnit.assertEquals(1, countTapped(game, "Study Hall"));
+        AssertJUnit.assertEquals(1, countTapped(game, "Sungrass Prairie"));
+    }
+
+    // Same board with a GW hand spell that only Sungrass colors — must still pay Equip {2} now, not strand.
+    @Test
+    public void studyHallFeedsSungrassForEquipTwoDespiteGwHandSpell() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Study Hall", p);
+        addCard("Sungrass Prairie", p);
+        addCardToZone("Armadillo Cloak", p, ZoneType.Hand);
+        Card spear = addCard("Shadowspear", p);
+        Card bear = addCard("Grizzly Bears", p);
+        bear.setSickness(false);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        final SpellAbility equip = findSAWithPrefix(spear, "Equip");
+        AssertJUnit.assertNotNull(equip);
+        equip.setActivatingPlayer(p);
+        if (equip.usesTargeting()) {
+            equip.getTargets().add(bear);
+        }
+        ManaCostBeingPaid mc = new ManaCostBeingPaid(equip.getPayCosts().getCostMana().getMana());
+
+        CardCollection sources = predictedManaSources(game, p, new ManaCostBeingPaid(mc), equip);
+        AssertJUnit.assertNotNull("Study Hall + Sungrass must pay Equip {2} even with GW in hand", sources);
+        AssertJUnit.assertTrue(sources.anyMatch(c -> "Study Hall".equals(c.getName())));
+        AssertJUnit.assertTrue(sources.anyMatch(c -> "Sungrass Prairie".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, new ManaCostBeingPaid(mc), equip));
+        AssertJUnit.assertEquals(1, countTapped(game, "Study Hall"));
+        AssertJUnit.assertEquals(1, countTapped(game, "Sungrass Prairie"));
+    }
+
+    // With a free colorless land covering {2}, reserve Sungrass for the GW hand spell.
+    @Test
+    public void reservesSungrassWhenWastesCoverGenericEquip() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Wastes", p);
+        addCard("Study Hall", p);
+        addCard("Sungrass Prairie", p);
+        addCardToZone("Armadillo Cloak", p, ZoneType.Hand);
+        Card spear = addCard("Shadowspear", p);
+        Card bear = addCard("Grizzly Bears", p);
+        bear.setSickness(false);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        final SpellAbility equip = findSAWithPrefix(spear, "Equip");
+        AssertJUnit.assertNotNull(equip);
+        equip.setActivatingPlayer(p);
+        if (equip.usesTargeting()) {
+            equip.getTargets().add(bear);
+        }
+        ManaCostBeingPaid mc = new ManaCostBeingPaid(equip.getPayCosts().getCostMana().getMana());
+
+        CardCollection sources = predictedManaSources(game, p, new ManaCostBeingPaid(mc), equip);
+        AssertJUnit.assertNotNull(sources);
+        AssertJUnit.assertTrue("Wastes should help pay Equip {2}",
+                sources.anyMatch(c -> "Wastes".equals(c.getName())));
+        AssertJUnit.assertTrue("Study Hall {C} should help pay Equip {2}",
+                sources.anyMatch(c -> "Study Hall".equals(c.getName())));
+        AssertJUnit.assertFalse("Sungrass should be reserved for Armadillo Cloak",
+                sources.anyMatch(c -> "Sungrass Prairie".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, new ManaCostBeingPaid(mc), equip));
+        AssertJUnit.assertEquals(1, countTapped(game, "Wastes"));
+        AssertJUnit.assertEquals(1, countTapped(game, "Study Hall"));
+        AssertJUnit.assertEquals(0, countTapped(game, "Sungrass Prairie"));
     }
 
     @Test
