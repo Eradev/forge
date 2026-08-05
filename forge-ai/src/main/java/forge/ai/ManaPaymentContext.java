@@ -131,9 +131,13 @@ final class ManaPaymentContext {
                 testDepositedSurplus);
     }
 
+    /**
+     * Nested feasibility / castability dry-run. Uses a fresh surplus list so nested deposits cannot
+     * leak into the outer payment as phantom floating mana.
+     */
     ManaPaymentContext nestedWithFilterProbe() {
         return new ManaPaymentContext(caches, depth + 1, true, paymentPromptPreview, tracePaymentPlan,
-                testDepositedSurplus);
+                null);
     }
 
     void recordStep(final SpellAbility sa, final boolean test, final String msg) {

@@ -850,15 +850,21 @@ public class ComputerUtilMana {
         AiCardMemory.clearMemorySet(ai, MemorySet.PAYS_SAC_COST);
         adjustManaCostToAvoidNegEffects(cost, sa.getHostCard(), ai);
 
-        ManaPaymentTracer.logMain(test, "paying " + cost + " for " + ManaPaymentTracer.manaPaymentSpellLabel(sa), ctx);
-
         List<Mana> manaSpentToPay = test ? new ArrayList<>() : sa.getPayingMana();
         List<SpellAbility> paymentList = Lists.newArrayList();
         final ManaPool manapool = ai.getManaPool();
 
         // Snapshot before any pool spend so test rollback restores floating mana.
-        final List<Mana> poolSnapshotAtStart = test && ctx.isOutermost()
-                ? ManaPaymentExecution.snapshotPool(manapool) : null;
+        // Nested castability/stranding probes must restore too — skipping left spent or refunded
+        // mana in the real pool for the outer payment (phantom "pool pays").
+        final List<Mana> poolSnapshotAtStart = test ? ManaPaymentExecution.snapshotPool(manapool) : null;
+
+        if (ctx.isOutermost()) {
+            ManaPaymentTracer.logMain(test, "paying " + cost + " for " + ManaPaymentTracer.manaPaymentSpellLabel(sa)
+                    + (manapool.isEmpty() ? "" : " (floating: " + manapool + ")"), ctx);
+        } else {
+            ManaPaymentTracer.logMain(test, "paying " + cost + " for " + ManaPaymentTracer.manaPaymentSpellLabel(sa), ctx);
+        }
 
         // Apply color/type conversion matrix if necessary (already done via autopay)
         if (ai.getControllingPlayer() == null) {
@@ -879,12 +885,15 @@ public class ComputerUtilMana {
 
         // not worth checking if it makes sense to not spend floating first
         if (manapool.payManaCostFromPool(cost, sa, test, manaSpentToPay)) {
-            ctx.recordStep(sa, test, "pool pays (floating mana)");
+            ctx.recordStep(sa, test, "Pool pays (floating mana)");
             CostPayment.handleOfferings(sa, test, cost.isPaid());
             ManaPaymentTracer.logResult(test, true, "  result: PAID (pool)", ctx);
             if (test) {
                 collectPlanSources(planOut, manaSpentToPay, paymentList);
                 // payManaCostFromPool already refunds when fully paid in test mode
+                if (poolSnapshotAtStart != null) {
+                    ManaPaymentExecution.restorePool(ai, poolSnapshotAtStart);
+                }
             }
             // paid all from floating mana
             return manaSpentToPay;
@@ -965,24 +974,21 @@ public class ComputerUtilMana {
             return null;
         }
 
-        if (test) {
-            ManaPaymentExecution.cleanupTestManaPayment(ai, manaSpentToPay, testDepositedSurplus);
-            if (ctx.isOutermost()) {
-                ctx.testDepositedSurplus = null;
-            }
-            if (poolSnapshotAtStart != null) {
-                ManaPaymentExecution.restorePool(ai, poolSnapshotAtStart);
-            }
-        }
-
         CostPayment.handleOfferings(sa, test, cost.isPaid());
 
         ManaPaymentTracer.logResult(test, true, "  result: PAID", ctx);
 
         if (test) {
             collectPlanSources(planOut, manaSpentToPay, paymentList);
-            manapool.refundMana(manaSpentToPay);
+            // Do not refundMana(manaSpentToPay) blindly — surplus Mana objects would enter the real pool.
+            ManaPaymentExecution.cleanupTestManaPayment(ai, manaSpentToPay, testDepositedSurplus);
+            if (ctx.isOutermost()) {
+                ctx.testDepositedSurplus = null;
+            }
             resetPayment(paymentList);
+            if (poolSnapshotAtStart != null) {
+                ManaPaymentExecution.restorePool(ai, poolSnapshotAtStart);
+            }
         }
 
         return manaSpentToPay;
@@ -1605,12 +1611,11 @@ public class ComputerUtilMana {
                 if (checkPlayable && !ma.canPlay()) {
                     continue;
                 }
-                final int costsToActivate = ma.getPayCosts().getCostMana() != null
-                        ? ma.getPayCosts().getCostMana().convertAmount() : 0;
+                // CostPartMana.convertAmount() is the CostPart amount field (defaults to 1), not CMC.
+                final int costsToActivate = ma.getPayCosts().getTotalMana().getCMC();
+                // Use amountOfManaGenerated — naive Produced$ split counts "Combo R W" as 3 mana.
+                final int producedTotal = ma.amountOfManaGenerated(true) - costsToActivate;
                 final String produced = ma.getParamOrDefault("Produced", "");
-                final int producedMana = produced.isEmpty() ? 0 : produced.split(" ").length;
-                final int producedAmount = AbilityUtils.calculateAmount(src, ma.getParamOrDefault("Amount", "1"), ma);
-                final int producedTotal = producedMana * producedAmount - costsToActivate;
 
                 if (costsToActivate > 0) {
                     producedWithCost += Math.max(0, producedTotal);
