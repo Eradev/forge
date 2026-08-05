@@ -223,6 +223,8 @@ final class ManaAbilitySort {
         final CardCollection remaining = new CardCollection(ai.getCardsIn(ZoneType.Hand));
         remaining.addAll(ai.getCardsIn(ZoneType.Command));
         remaining.remove(sa.getHostCard());
+        // Command zone also holds effects/emblems/etc. with no CardRules; skip those.
+        remaining.removeIf(Card::isImmutable);
         return AiDeckStatistics.fromCards(remaining).maxPips[5] > 0;
     }
 
