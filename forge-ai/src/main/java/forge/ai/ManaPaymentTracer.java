@@ -1,14 +1,21 @@
 package forge.ai;
 
 import forge.game.card.Card;
+import forge.game.card.CardCollection;
+import forge.game.card.CardCollectionView;
 import forge.game.cost.Cost;
+import forge.game.cost.CostPart;
+import forge.game.cost.CostSacrifice;
+import forge.game.player.Player;
 import forge.game.spellability.AbilityStatic;
 import forge.game.spellability.SpellAbility;
 import forge.game.zone.ZoneType;
 import forge.util.IHasForgeLog;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * Debug tracing for AI mana payment ({@code -Dforge.debugManaPayment*}).
@@ -54,6 +61,121 @@ final class ManaPaymentTracer implements IHasForgeLog {
             return "?";
         }
         return card.getName() + " (" + card.getId() + ")";
+    }
+
+    /**
+     * Human-readable action for a mana source in the payment plan:
+     * {@code Sacrifice Lotus Petal (103)},
+     * {@code Tap Phyrexian Tower (5), Sacrifice Grizzly Bears (8)},
+     * {@code Activate Ashnod's Altar (3), Sacrifice Soldier Token (4)},
+     * or {@code Tap Forest (1)}.
+     */
+    static String formatSourceAction(final SpellAbility ma) {
+        return formatSourceAction(ma, ma != null ? ma.getActivatingPlayer() : null);
+    }
+
+    static String formatSourceAction(final SpellAbility ma, final Player ai) {
+        if (ma == null || ma.getHostCard() == null) {
+            return "Activate ?";
+        }
+        final Card host = ma.getHostCard();
+        final String label = formatSourceLabel(host);
+        final Cost payCosts = ma.getPayCosts();
+        if (ComputerUtilCost.isSacrificeSelfCost(payCosts)) {
+            return "Sacrifice " + label;
+        }
+        final String sacTargets = formatExternalSacrificeTargets(ma, ai);
+        final String activate;
+        if (payCosts != null && payCosts.hasTapCost()) {
+            activate = "Tap " + label;
+        } else {
+            activate = "Activate " + label;
+        }
+        if (sacTargets != null) {
+            return activate + ", Sacrifice " + sacTargets;
+        }
+        if (ManaFilterConsolidation.sacrificesOtherPermanentsForMana(ma)) {
+            return activate + " (sacrifice a creature)";
+        }
+        return activate;
+    }
+
+    /**
+     * Names the permanent(s) the AI would sacrifice for outlets like Ashnod's Altar / Phyrexian Tower.
+     * Prefers cards already reserved in {@link MemorySet#PAYS_SAC_COST}; otherwise asks the AI chooser
+     * (display-only, does not reserve).
+     */
+    private static String formatExternalSacrificeTargets(final SpellAbility ma, final Player ai) {
+        if (!ManaFilterConsolidation.sacrificesOtherPermanentsForMana(ma)) {
+            return null;
+        }
+        final Cost payCosts = ma.getPayCosts();
+        if (payCosts == null) {
+            return null;
+        }
+        final Card host = ma.getHostCard();
+        final List<String> labels = new ArrayList<>();
+        for (final CostPart part : payCosts.getCostParts()) {
+            if (!(part instanceof CostSacrifice) || part.payCostFromSource()) {
+                continue;
+            }
+            final List<Card> chosen = resolveExternalSacrificeTargets(ma, ai, (CostSacrifice) part);
+            for (final Card c : chosen) {
+                if (c != null && c != host) {
+                    labels.add(formatSourceLabel(c));
+                }
+            }
+        }
+        if (labels.isEmpty()) {
+            return null;
+        }
+        return String.join(" and ", labels);
+    }
+
+    private static List<Card> resolveExternalSacrificeTargets(final SpellAbility ma, final Player ai,
+            final CostSacrifice part) {
+        final List<Card> result = new ArrayList<>();
+        if (ai == null) {
+            return result;
+        }
+        final Card host = ma.getHostCard();
+        final Set<Card> remembered = AiCardMemory.getMemorySet(ai, AiCardMemory.MemorySet.PAYS_SAC_COST);
+        if (remembered != null) {
+            for (final Card c : remembered) {
+                if (c == null || c == host) {
+                    continue;
+                }
+                if (c.isValid(part.getType().split(";"), ai, host, ma)) {
+                    result.add(c);
+                    if (result.size() >= Math.max(1, part.getAbilityAmount(ma))) {
+                        return result;
+                    }
+                }
+            }
+        }
+        if (!result.isEmpty()) {
+            return result;
+        }
+        if (!ai.isAI() || !(ai.getController() instanceof PlayerControllerAi)) {
+            return result;
+        }
+        try {
+            final int amount = Math.max(1, part.getAbilityAmount(ma));
+            final CardCollection exclude = new CardCollection();
+            if (remembered != null) {
+                exclude.addAll(remembered);
+            }
+            final AiController aic = ((PlayerControllerAi) ai.getController()).getAi();
+            final CardCollectionView choices = aic.chooseSacrificeType(part.getType(), ma, ma.isTrigger(), amount, exclude);
+            if (choices != null) {
+                for (final Card c : choices) {
+                    result.add(c);
+                }
+            }
+        } catch (final RuntimeException ignored) {
+            // Plan text should never fail payment; fall back to generic wording.
+        }
+        return result;
     }
 
     /** Spell name for payment traces; zone/ability kind tagged when not a hand spell. */
@@ -109,35 +231,58 @@ final class ManaPaymentTracer implements IHasForgeLog {
         if (saPayment == null) {
             return;
         }
-        logMain(test, "  tap " + formatSourceLabel(saPayment.getHostCard()) + " -> " + manaProduced
-                + " (paying " + paidShards + " for " + manaPaymentSpellLabel(sa) + ")", ctx);
+        final String msg = "  " + formatSourceAction(saPayment, saPayment.getActivatingPlayer() != null
+                ? saPayment.getActivatingPlayer()
+                : (sa != null ? sa.getActivatingPlayer() : null))
+                + " -> " + manaProduced
+                + " (paying " + paidShards + " for " + manaPaymentSpellLabel(sa) + ")";
+        logMain(test, msg, ctx);
+        if (ctx != null) {
+            ctx.recordStep(sa, test, msg);
+        }
     }
 
+    /**
+     * Nested free source paying a filter/signet activation cost (e.g. sac Petal for Signet {1}).
+     * Included in {@code MANA_PAYMENT_PLAN} so the user sees the play-by-play before the filter tap.
+     */
     static void logNestedTap(final boolean test, final SpellAbility chosen, final String manaProduced,
-            final Card filterHost, final ManaPaymentContext ctx) {
+            final Card filterHost, final SpellAbility paidFor, final ManaPaymentContext ctx) {
         if (chosen == null) {
             return;
         }
-        logMain(test, "    nested tap " + formatSourceLabel(chosen.getHostCard()) + " -> "
-                + (manaProduced != null ? manaProduced : "")
-                + " for " + formatSourceLabel(filterHost) + " activation", ctx);
+        final String produced = manaProduced != null ? manaProduced : "";
+        final Player ai = chosen.getActivatingPlayer() != null
+                ? chosen.getActivatingPlayer()
+                : (paidFor != null ? paidFor.getActivatingPlayer() : null);
+        final String msg = "  " + formatSourceAction(chosen, ai) + " -> " + produced
+                + " (paying activation of " + formatSourceLabel(filterHost) + ")";
+        logMain(test, msg, ctx);
+        if (ctx != null && paidFor != null) {
+            ctx.recordStep(paidFor, test, msg);
+        }
     }
 
     static boolean shouldRecordPlanStep(final SpellAbility sa, final boolean test, final ManaPaymentContext ctx) {
         if (!planEnabled() || sa == null || ctx == null || !ctx.tracePaymentPlan || !ctx.isOutermost()) {
             return false;
         }
-        final Card host = sa.getHostCard();
-        if (host == null || host.isInZone(ZoneType.Hand)) {
+        // Never plan the mana abilities used as payment sources — only the spell/ability being paid for.
+        if (sa.isManaAbility()) {
             return false;
         }
-        if (host.isInZone(ZoneType.Stack)) {
-            return true;
+        final Card host = sa.getHostCard();
+        if (host == null) {
+            return false;
         }
-        if (host.isInZone(ZoneType.Battlefield) && isBattlefieldAbilityPayment(sa)) {
-            return true;
+        final Cost payCosts = sa.getPayCosts();
+        if (payCosts == null || !payCosts.hasManaCost()) {
+            return false;
         }
-        return host.isInZone(ZoneType.Command) && isCommandZoneAbilityPayment(sa);
+        // Payment-prompt only (tracePaymentPlan). Include spells (stack/hand) and abilities
+        // (battlefield/command/exile/graveyard flashback host before zone change, etc.).
+        // Do not require isActivatedAbility() — that missed some AbilityStatic / edge SA types.
+        return true;
     }
 
     static void logPaymentPlan(final boolean test, final String costLabel,
@@ -212,10 +357,6 @@ final class ManaPaymentTracer implements IHasForgeLog {
         if (raw == null) {
             return "";
         }
-        String s = raw.trim();
-        if (s.startsWith("tap ")) {
-            s = "Tap " + s.substring(4);
-        }
-        return s;
+        return raw.trim();
     }
 }
