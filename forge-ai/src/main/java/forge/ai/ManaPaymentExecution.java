@@ -881,9 +881,13 @@ final class ManaPaymentExecution {
     /**
      * True when a net-positive consolidator can pay the entire remaining spell cost (including nested
      * activation), e.g. Lotus Petal -> Signet {1} -> {G}{W} for {1}{W}.
+     * <p>
+     * Also true when the consolidator pays all colored pips and leftover generic/colorless is still
+     * covered by free sources not consumed by that activation (e.g. Petal -> Graven Cairns for
+     * {@code {B}{R}}, Study Hall {@code {C}} for {@code {1}}).
      */
     static boolean consolidatorCoversSpellCost(final SpellAbility filter, final ManaCostBeingPaid cost,
-            final SpellAbility sa, final Player ai, final ManaPaymentContext ctx) {
+            final SpellAbility sa, final Player ai, final ManaPaymentContext ctx, final boolean test) {
         if (!isNetPositiveConsolidator(filter) || shouldReserveConsolidator(filter, sa, cost, ai, ctx)) {
             return false;
         }
@@ -898,17 +902,68 @@ final class ManaPaymentExecution {
         refreshExpressChoice(cost, sa, ai, probeShard, filter);
         final ManaCostBeingPaid probe = new ManaCostBeingPaid(cost);
         applyChosenPaymentToCostProbe(probe, filter, ai, probeShard);
-        return probe.isPaid();
+        if (probe.isPaid()) {
+            return true;
+        }
+        if (ComputerUtilMana.useFullPaymentProbes(test, ctx)) {
+            return keepsRemainingCostPayableWithConsumed(cost, sa, ai, probeShard, filter, consumed, test, ctx);
+        }
+        // Feasibility dry-run: only accept partial cover when leftover is generic/colorless from free taps.
+        return remainingGenericPayableByUnconsumedFreeSources(probe, consumed, ai, ctx);
+    }
+
+    /**
+     * After a consolidator pays colored pips, true when unpaid generic/colorless can be covered by free
+     * sources whose hosts were not consumed (and no colored shards remain).
+     */
+    static boolean remainingGenericPayableByUnconsumedFreeSources(final ManaCostBeingPaid remaining,
+            final Set<Card> consumed, final Player ai, final ManaPaymentContext ctx) {
+        if (remaining == null || remaining.isPaid() || ai == null) {
+            return remaining != null && remaining.isPaid();
+        }
+        if (hasUnpaidColoredShards(remaining)) {
+            return false;
+        }
+        final int need = countUnpaidPips(remaining);
+        if (need <= 0) {
+            return true;
+        }
+        final ListMultimap<Integer, SpellAbility> map = ComputerUtilMana.getOrBuildManaAbilityMap(ai, true, ctx);
+        final Set<Card> counted = new HashSet<>();
+        int available = 0;
+        for (final SpellAbility ma : map.get(ManaAtom.GENERIC)) {
+            final Card host = ma.getHostCard();
+            if (host == null || (consumed != null && consumed.contains(host)) || counted.contains(host)) {
+                continue;
+            }
+            if (ManaFilterConsolidation.hasManaActivationCost(ma)) {
+                continue;
+            }
+            if (hasTapCost(ma) && (host.isTapped()
+                    || AiCardMemory.isRememberedCard(ai, host, MemorySet.PAYS_TAP_COST))) {
+                continue;
+            }
+            if (AiCardMemory.isRememberedCard(ai, host, MemorySet.PAYS_SAC_COST)
+                    || AiCardMemory.isRememberedCard(ai, host, MemorySet.HELD_MANA_SOURCES_FOR_NEXT_SPELL)) {
+                continue;
+            }
+            counted.add(host);
+            available += Math.max(1, ManaFilterConsolidation.getManaProducedAmount(ma));
+            if (available >= need) {
+                return true;
+            }
+        }
+        return false;
     }
 
     static boolean consolidatorCoversRemainingCost(final Collection<SpellAbility> maList,
             final ManaCostBeingPaid cost, final SpellAbility sa, final Player ai,
-            final ManaPaymentContext ctx) {
+            final ManaPaymentContext ctx, final boolean test) {
         for (final SpellAbility other : maList) {
             if (ManaFilterConsolidation.isDisposableManaAbility(other) || !isConsolidatingCandidate(other)) {
                 continue;
             }
-            if (consolidatorCoversSpellCost(other, cost, sa, ai, ctx)) {
+            if (consolidatorCoversSpellCost(other, cost, sa, ai, ctx, test)) {
                 return true;
             }
         }
@@ -1226,7 +1281,7 @@ final class ManaPaymentExecution {
     static SpellAbility chooseManaAbilityForShard(final ManaCostBeingPaid cost, final SpellAbility sa,
             final Player ai, final ManaCostShard toPay, Collection<SpellAbility> maList, final boolean checkCosts,
             final boolean test, final ManaPaymentContext ctx) {
-        final List<SpellAbility> valid = collectValidManaPaymentChoices(cost, sa, ai, toPay, maList, checkCosts, ctx);
+        final List<SpellAbility> valid = collectValidManaPaymentChoices(cost, sa, ai, toPay, maList, checkCosts, test, ctx);
         if (valid.isEmpty()) {
             return null;
         }
@@ -1649,7 +1704,8 @@ final class ManaPaymentExecution {
 
     static List<SpellAbility> collectValidManaPaymentChoices(final ManaCostBeingPaid cost,
             final SpellAbility sa, final Player ai, final ManaCostShard toPay,
-            Collection<SpellAbility> maList, final boolean checkCosts, final ManaPaymentContext ctx) {
+            Collection<SpellAbility> maList, final boolean checkCosts, final boolean test,
+            final ManaPaymentContext ctx) {
         Card saHost = sa.getHostCard();
 
         // When paying the activation cost of a filter (the ability being paid for is itself a mana
@@ -1814,7 +1870,7 @@ final class ManaPaymentExecution {
                 continue;
             }
             if (ManaFilterConsolidation.isDisposableManaAbility(paymentChoice) && !toPay.isGeneric()
-                    && consolidatorCoversRemainingCost(maList, cost, sa, ai, ctx)) {
+                    && consolidatorCoversRemainingCost(maList, cost, sa, ai, ctx, test)) {
                 continue;
             }
             if (shouldReserveConsolidator(paymentChoice, sa, cost, ai, ctx)) {
@@ -2018,36 +2074,6 @@ final class ManaPaymentExecution {
     }
 
     /**
-     * True when an untapped reusable source can still pay a filter's nested activation cost
-     * (excludes disposables and sources already reserved for this payment).
-     */
-    static boolean hasAvailableReusableActivatorForNestedCost(final Player ai, final Card filterHost,
-            final ManaPaymentContext ctx) {
-        if (ai == null) {
-            return false;
-        }
-        if (ctx != null) {
-            for (final SpellAbility ma : ComputerUtilMana.getOrBuildUniqueManaAbilities(ai, true, ctx)) {
-                if (isCurrentlyAvailableForNestedActivation(ai, ma, filterHost)
-                        && !ManaFilterConsolidation.isDisposableManaAbility(ma)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-        for (Card c : ai.getCardsIn(ZoneType.Battlefield)) {
-            for (SpellAbility ma : ComputerUtilMana.getAIPlayableMana(c)) {
-                if (!isCurrentlyAvailableForNestedActivation(ai, ma, filterHost)
-                        || ManaFilterConsolidation.isDisposableManaAbility(ma)) {
-                    continue;
-                }
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
      * Simulate paying a mana ability's generic activation cost (e.g. a signet's {1}) during test-mode planning.
      * Only free sources (no mana activation cost of their own) may pay it, which blocks filter-for-filter
      * chains. Consumed sources are removed from the shared candidate pool so they can't be reused.
@@ -2125,8 +2151,8 @@ final class ManaPaymentExecution {
 
             // Only free sources may pay a nested activation cost (no other signets/filters),
             // and the filter can never tap itself to pay its own cost.
-            final boolean reusableActivatorAvailable = hasAvailableReusableActivatorForNestedCost(ai, filterHost, ctx);
             final List<SpellAbility> freeCandidates = new ArrayList<>();
+            boolean reusableForThisShard = false;
             for (SpellAbility ma : saList) {
                 if (!isFreeManaSourceForNestedActivation(ma, filterHost)) {
                     continue;
@@ -2138,10 +2164,15 @@ final class ManaPaymentExecution {
                 if (!isCurrentlyAvailableForNestedActivation(ai, ma, filterHost)) {
                     continue;
                 }
-                if (reusableActivatorAvailable && ManaFilterConsolidation.isDisposableManaAbility(ma)) {
-                    continue;
+                if (!ManaFilterConsolidation.isDisposableManaAbility(ma)) {
+                    reusableForThisShard = true;
                 }
                 freeCandidates.add(ma);
+            }
+            // Prefer Forests/Plains over Petal only when a reusable source can actually pay this shard
+            // (Study Hall {C} must not block Petal from paying Graven Cairns {B/R}).
+            if (reusableForThisShard) {
+                freeCandidates.removeIf(ManaFilterConsolidation::isDisposableManaAbility);
             }
             if (freeCandidates.isEmpty()) {
                 pool.payManaCostFromPool(nestedCost, filterAb, test, manaSpentToPay);
@@ -2529,7 +2560,7 @@ final class ManaPaymentExecution {
             if (!seen.add(ma) || !isNetPositiveConsolidator(ma)) {
                 continue;
             }
-            if (!consolidatorCoversSpellCost(ma, cost, sa, ai, ctx)) {
+            if (!consolidatorCoversSpellCost(ma, cost, sa, ai, ctx, test)) {
                 continue;
             }
             final Set<Card> consumed = collectCardsConsumedByPayment(ma, sa, ai, ctx);
