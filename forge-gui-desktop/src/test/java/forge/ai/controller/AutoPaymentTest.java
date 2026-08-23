@@ -527,6 +527,39 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals(0, countTapped(game, "Sungrass Prairie"));
     }
 
+    // Petal activates Graven Cairns for {B}{R}; Study Hall's free {C} pays {1} — do not spend Petal on a single pip.
+    @Test
+    public void petalFeedsGravenCairnsWithStudyHallForGeneric() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Lotus Petal", p);
+        addCard("Graven Cairns", p);
+        addCard("Study Hall", p);
+        Card spell = addCardToZone("Alesha, Who Laughs at Fate", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("1 B R");
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertNotNull("Petal + Graven + Study Hall should pay {1}{B}{R}", sources);
+        AssertJUnit.assertTrue("Lotus Petal should activate Graven Cairns",
+                sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
+        AssertJUnit.assertTrue("Graven Cairns should produce the colored pips",
+                sources.anyMatch(c -> "Graven Cairns".equals(c.getName())));
+        AssertJUnit.assertTrue("Study Hall should pay generic {1}",
+                sources.anyMatch(c -> "Study Hall".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1 B R"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Graven Cairns"));
+        AssertJUnit.assertEquals(1, countTapped(game, "Study Hall"));
+        AssertJUnit.assertEquals("Lotus Petal should be sacrificed", 0,
+                game.getCardsIn(ZoneType.Battlefield).stream().filter(c -> "Lotus Petal".equals(c.getName())).count());
+    }
+
     @Test
     public void emitsPaymentPlanWhenDebugEnabled() {
         Game game = initAndCreateGame();
