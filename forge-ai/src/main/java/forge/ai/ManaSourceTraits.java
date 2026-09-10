@@ -4,14 +4,22 @@ import forge.card.CardType;
 import forge.game.ability.AbilityUtils;
 import forge.game.card.Card;
 import forge.game.cost.Cost;
+import forge.game.cost.CostExile;
 import forge.game.cost.CostPart;
 import forge.game.cost.CostPartMana;
+import forge.game.cost.CostPutCardToLib;
+import forge.game.cost.CostReturn;
 import forge.game.cost.CostSacrifice;
+import forge.game.cost.CostTap;
 import forge.game.cost.CostTapType;
+import forge.game.cost.CostUntap;
 import forge.game.spellability.AbilityManaPart;
 import forge.game.spellability.SpellAbility;
 
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Per-mana-ability characteristics used by sorting, efficiency scoring and filter detection.
@@ -33,6 +41,14 @@ final class ManaSourceTraits {
     final int activationCMC;
     final boolean disposable;
     final boolean sacrificesOther;
+    /** Cost removes the host from the battlefield (sacrifice / exile / return / tuck itself). */
+    final boolean hostLeavesBattlefield;
+    /**
+     * Exclusive host resources this cost consumes: {@code "tap"}, {@code "untap"}, {@code "self"}, or the
+     * cost-part kind for anything else. Two abilities on one host conflict when these intersect
+     * ({@link #leavesSiblingUsable}); mana parts are excluded since other sources pay them.
+     */
+    final Set<String> exclusiveCostKeys;
     final boolean selfSacCreature;
     final int producedAmount;
     final int comboAmount;
@@ -67,6 +83,8 @@ final class ManaSourceTraits {
         activationCMC = 0;
         disposable = false;
         sacrificesOther = false;
+        hostLeavesBattlefield = false;
+        exclusiveCostKeys = Collections.emptySet();
         selfSacCreature = false;
         producedAmount = 0;
         comboAmount = 0;
@@ -119,9 +137,14 @@ final class ManaSourceTraits {
 
         boolean anySac = false;
         boolean sacOther = false;
+        boolean leaves = false;
         boolean tapsCreature = false;
+        final Set<String> keys = new HashSet<>();
         if (parts != null) {
             for (final CostPart part : parts) {
+                if (part instanceof CostPartMana) {
+                    continue;
+                }
                 if (part instanceof CostSacrifice) {
                     anySac = true;
                     if (!part.payCostFromSource()) {
@@ -130,9 +153,22 @@ final class ManaSourceTraits {
                 } else if (part instanceof CostTapType && isCreatureTapType(part.getType())) {
                     tapsCreature = true;
                 }
+                if (part instanceof CostTap) {
+                    keys.add("tap");
+                } else if (part instanceof CostUntap) {
+                    keys.add("untap");
+                } else if (part.payCostFromSource() && (part instanceof CostSacrifice || part instanceof CostExile
+                        || part instanceof CostReturn || part instanceof CostPutCardToLib)) {
+                    leaves = true;
+                    keys.add("self");
+                } else {
+                    keys.add(part.getClass().getSimpleName());
+                }
             }
         }
         sacrificesOther = sacOther;
+        hostLeavesBattlefield = leaves;
+        exclusiveCostKeys = keys.isEmpty() ? Collections.emptySet() : keys;
 
         boolean disp = false;
         if (isManaAbility) {
@@ -207,6 +243,16 @@ final class ManaSourceTraits {
 
     boolean isMultiManaCombo() {
         return comboAmount >= 2;
+    }
+
+    /**
+     * After this ability was activated, can a sibling mana ability with traits {@code other} on the same
+     * host still be activated? True when the host is still on the battlefield and the two costs consume
+     * disjoint exclusive resources: Heart of Ramos {@code {T}} then {@code Sacrifice}, or a hypothetical
+     * {@code {T}} then {@code {Q}}. Two {@code {T}} abilities, or anything after a self-sacrifice, conflict.
+     */
+    boolean leavesSiblingUsable(final ManaSourceTraits other) {
+        return !hostLeavesBattlefield && Collections.disjoint(exclusiveCostKeys, other.exclusiveCostKeys);
     }
 
     /** Drop board-state-derived memos after a real (production) activation changed the board. */
