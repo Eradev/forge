@@ -2218,6 +2218,19 @@ final class ManaPaymentExecution {
         return false;
     }
 
+    /**
+     * Drop {@code used} from a candidate pool after it paid something, along with every sibling mana
+     * ability on the same host that can no longer be activated (test mode never really pays the cost, so
+     * this is what prevents re-using the same tap / sacrifice). Siblings whose costs don't conflict stay —
+     * Heart of Ramos can {@code {T}} for one {@code R} and then be sacrificed for the second — per
+     * {@link ManaSourceTraits#leavesSiblingUsable}.
+     */
+    static void removeUsedManaSource(final Collection<SpellAbility> pool, final SpellAbility used) {
+        final Card host = used.getHostCard();
+        final ManaSourceTraits u = ManaSourceTraits.of(used);
+        pool.removeIf(s -> s.getHostCard() == host && (s == used || !u.leavesSiblingUsable(ManaSourceTraits.of(s))));
+    }
+
     /** Record tap/sacrifice reservation during test-mode planning so it matches production auto-pay. */
     static void rememberManaSourceConsumed(final Player ai, final SpellAbility ma) {
         if (hasTapCost(ma)) {
@@ -2358,8 +2371,8 @@ final class ManaPaymentExecution {
                     return false;
                 }
             }
-            nestedSourcesForShards.values().removeIf(CardTraitPredicates.isHostCard(chosen.getHostCard()));
-            sourcesForShards.values().removeIf(CardTraitPredicates.isHostCard(chosen.getHostCard()));
+            removeUsedManaSource(nestedSourcesForShards.values(), chosen);
+            removeUsedManaSource(sourcesForShards.values(), chosen);
             if (unpaidBefore == unpaidProgressKey(nestedCost)) {
                 return false;
             }
@@ -2617,7 +2630,7 @@ final class ManaPaymentExecution {
         if (planOut != null) {
             planOut.add(filterAb.getHostCard());
         }
-        sourcesForShards.values().removeIf(CardTraitPredicates.isHostCard(filterAb.getHostCard()));
+        removeUsedManaSource(sourcesForShards.values(), filterAb);
         if (test) {
             rememberManaSourceConsumed(ai, filterAb);
         }
@@ -2826,7 +2839,7 @@ final class ManaPaymentExecution {
                 ManaPaymentTracer.logTap(false, saPayment, sa, formatShardsPaidDiff(costBefore, cost, toPay), manaProduced, ctx);
             }
         }
-        sourcesForShards.values().removeIf(CardTraitPredicates.isHostCard(saPayment.getHostCard()));
+        removeUsedManaSource(sourcesForShards.values(), saPayment);
         return true;
     }
 
