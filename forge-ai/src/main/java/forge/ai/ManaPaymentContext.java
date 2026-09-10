@@ -94,7 +94,10 @@ final class ManaPaymentContext {
             return boardHasNetPositiveConsolidator;
         }
 
-        /** Both a combo consolidator and a net-positive signet-style filter exist (mana banking chain). */
+        /**
+         * A net-positive signet-style filter exists together with a second consolidator on another host
+         * (combo filter or another net-positive filter), so a mana banking chain is possible.
+         */
         boolean boardHasBankingPair(final Player ai) {
             if (boardHasBankingPair == null) {
                 scanBoardConsolidators(ai);
@@ -103,20 +106,24 @@ final class ManaPaymentContext {
         }
 
         private void scanBoardConsolidators(final Player ai) {
-            boolean netPositive = false;
+            int netPositiveHosts = 0;
             boolean combo = false;
             for (final Card c : ai.getCardsIn(ZoneType.Battlefield)) {
+                boolean hostNetPositive = false;
                 for (final SpellAbility ma : c.getManaAbilities()) {
                     final ManaSourceTraits t = ManaSourceTraits.of(ma);
                     if (t.comboFilter) {
                         combo = true;
                     } else if (t.netPositiveConsolidator) {
-                        netPositive = true;
+                        hostNetPositive = true;
                     }
                 }
+                if (hostNetPositive) {
+                    netPositiveHosts++;
+                }
             }
-            boardHasNetPositiveConsolidator = netPositive || combo;
-            boardHasBankingPair = netPositive && combo;
+            boardHasNetPositiveConsolidator = netPositiveHosts > 0 || combo;
+            boardHasBankingPair = netPositiveHosts > 0 && (combo || netPositiveHosts > 1);
         }
 
         /** The cache of the outer payment running on this thread, or {@code null} outside a payment. */
