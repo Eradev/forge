@@ -57,50 +57,57 @@ final class ManaAbilitySort {
         }
     }
 
+    /**
+     * Single resolver behind every {@link GenericColorPreference} lookup. First matching row wins:
+     * <pre>
+     *  coloredBasicTapped                          -> PREFER_COLORLESS  (already spent a basic; stop)
+     *  reserveColorless                            -> RESERVE_COLORLESS (hand needs dedicated {C})
+     *  !unpaidColored || colorlessCoversGeneric    -> PREFER_COLORLESS  (colored pips are safe)
+     *  otherwise                                   -> DEFAULT
+     * </pre>
+     * {@code colorlessCoversGeneric} is a supplier because it can be expensive and is only needed
+     * when colored pips remain unpaid.
+     */
+    static GenericColorPreference genericColorPreference(final boolean coloredBasicTapped,
+            final boolean reserveColorless, final boolean unpaidColored,
+            final java.util.function.BooleanSupplier colorlessCoversGeneric) {
+        if (coloredBasicTapped) {
+            return GenericColorPreference.PREFER_COLORLESS;
+        }
+        if (reserveColorless) {
+            return GenericColorPreference.RESERVE_COLORLESS;
+        }
+        if (!unpaidColored || colorlessCoversGeneric.getAsBoolean()) {
+            return GenericColorPreference.PREFER_COLORLESS;
+        }
+        return GenericColorPreference.DEFAULT;
+    }
+
+    /**
+     * Preference for {@link #sortManaAbilities}: {C} carries generic when every colored pip has a reusable
+     * free producer (and a {C} source is in the generic bucket) or once no colored pips remain unpaid.
+     */
     static GenericColorPreference genericColorPreference(final Player ai, final SpellAbility sa,
             final ManaCostBeingPaid cost, final int coloredShardCount,
             final ListMultimap<ManaCostShard, SpellAbility> sourcesForShards,
             final ManaPaymentContext paymentCtx) {
-        if (shouldReserveColorlessMana(ai, sa)) {
-            return GenericColorPreference.RESERVE_COLORLESS;
-        }
-        if (coloredShardCount > 0
-                && ManaPaymentExecution.hasReusableFreeProducerForEveryColoredShard(cost, ai, paymentCtx)
-                && genericBucketHasColorlessSource(sourcesForShards)) {
-            return GenericColorPreference.PREFER_COLORLESS;
-        }
-        // Colored shards may already be paid; still tap {C} before another colored basic for generic.
-        if (genericBucketHasColorlessSource(sourcesForShards)
-                && !ManaPaymentExecution.hasUnpaidColoredShards(cost)) {
-            return GenericColorPreference.PREFER_COLORLESS;
-        }
-        return GenericColorPreference.DEFAULT;
+        return genericColorPreference(false, shouldReserveColorlessMana(ai, sa),
+                ManaPaymentExecution.hasUnpaidColoredShards(cost),
+                () -> coloredShardCount > 0 && genericBucketHasColorlessSource(sourcesForShards)
+                        && ManaPaymentExecution.hasReusableFreeProducerForEveryColoredShard(cost, ai, paymentCtx));
     }
 
     /** Match nested filter activation / {@link ComputerUtilMana#chooseManaAbility} generic ranking. */
     static GenericColorPreference genericColorPreferenceForNestedActivation(final Player ai,
             final SpellAbility sa, final ManaCostBeingPaid cost) {
-        if (ManaPaymentExecution.coloredBasicTappedThisPayment(ai)) {
-            return GenericColorPreference.PREFER_COLORLESS;
-        }
-        if (shouldReserveColorlessMana(ai, sa)) {
-            return GenericColorPreference.RESERVE_COLORLESS;
-        }
-        if (!ManaPaymentExecution.hasUnpaidColoredShards(cost)) {
-            return GenericColorPreference.PREFER_COLORLESS;
-        }
-        return GenericColorPreference.DEFAULT;
+        return genericColorPreference(ManaPaymentExecution.coloredBasicTappedThisPayment(ai),
+                shouldReserveColorlessMana(ai, sa), ManaPaymentExecution.hasUnpaidColoredShards(cost), () -> false);
     }
 
-    /** Preference for paying generic shards this iteration */
+    /** Preference for paying generic shards this iteration (never DEFAULT: colored pips are handled elsewhere). */
     public static GenericColorPreference resolveGenericColorPreference(final Player ai, final SpellAbility sa) {
-        if (ManaPaymentExecution.coloredBasicTappedThisPayment(ai)) {
-            return GenericColorPreference.PREFER_COLORLESS;
-        }
-        if (shouldReserveColorlessMana(ai, sa)) {
-            return GenericColorPreference.RESERVE_COLORLESS;
-        }
-        return GenericColorPreference.PREFER_COLORLESS;
+        return genericColorPreference(ManaPaymentExecution.coloredBasicTappedThisPayment(ai),
+                shouldReserveColorlessMana(ai, sa), false, () -> false);
     }
 
     public static int compareGenericCandidatesForPayment(final SpellAbility a, final SpellAbility b,
@@ -220,6 +227,20 @@ final class ManaAbilitySort {
         if (ai == null) {
             return false;
         }
+        final ManaPaymentContext.ManaPaymentPlanCache cache = ManaPaymentContext.ManaPaymentPlanCache.bound();
+        final Card host = sa == null ? null : sa.getHostCard();
+        if (cache == null || host == null) {
+            return computeShouldReserveColorlessMana(ai, sa);
+        }
+        Boolean cached = cache.reserveColorlessByHost.get(host);
+        if (cached == null) {
+            cached = computeShouldReserveColorlessMana(ai, sa);
+            cache.reserveColorlessByHost.put(host, cached);
+        }
+        return cached;
+    }
+
+    private static boolean computeShouldReserveColorlessMana(final Player ai, final SpellAbility sa) {
         final CardCollection remaining = new CardCollection(ai.getCardsIn(ZoneType.Hand));
         remaining.addAll(ai.getCardsIn(ZoneType.Command));
         remaining.remove(sa.getHostCard());
@@ -238,49 +259,6 @@ final class ManaAbilitySort {
         return reserveColorless ? (c1 ? 1 : -1) : (c1 ? -1 : 1);
     }
 
-    private enum FilterKind { NONE, MULTI_SHARD, ANY_MANA, COMBO_MULTI }
-
-    /** Precomputed mana-source characteristics for sort and efficiency scoring. */
-    static final class ManaSourceTraits {
-        final SpellAbility ability;
-        final FilterKind filterKind;
-        final int producedAmount;
-        final int genericRank;
-        private Boolean consolidates;
-
-        private ManaSourceTraits(final SpellAbility ability, final FilterKind filterKind, final int producedAmount,
-                final int genericRank) {
-            this.ability = ability;
-            this.filterKind = filterKind;
-            this.producedAmount = producedAmount;
-            this.genericRank = genericRank;
-        }
-
-        static ManaSourceTraits of(final SpellAbility ma, final ManaAbilitySortContext ctx) {
-            FilterKind kind = FilterKind.NONE;
-            if (ManaFilterConsolidation.isComboConsolidatingFilter(ma)) {
-                kind = FilterKind.COMBO_MULTI;
-            } else if (ManaFilterConsolidation.isMultiPipActivationFilter(ma)) {
-                kind = FilterKind.MULTI_SHARD;
-            } else if (ManaFilterConsolidation.isAnyManaConsolidatingFilter(ma)) {
-                kind = FilterKind.ANY_MANA;
-            }
-            return new ManaSourceTraits(ma, kind, ManaFilterConsolidation.getManaProducedAmount(ma),
-                    rankGenericManaSource(ma, ctx.genericColorPref));
-        }
-
-        boolean tightFor(final int remaining) {
-            return ManaPaymentExecution.isTightGenericProducer(ability, remaining);
-        }
-
-        boolean consolidates(final ManaAbilitySortContext ctx) {
-            if (consolidates == null) {
-                consolidates = ctx.consolidates(ability);
-            }
-            return consolidates;
-        }
-    }
-
     static boolean genericBucketHasColorlessSource(
             final ListMultimap<ManaCostShard, SpellAbility> sourcesForShards) {
         if (!sourcesForShards.containsKey(ManaCostShard.GENERIC)) {
@@ -292,13 +270,6 @@ final class ManaAbilitySort {
             }
         }
         return false;
-    }
-
-    static boolean consolidatesFilter(final Player ai, final SpellAbility ma,
-            final ListMultimap<Integer, SpellAbility> manaAbilityMap,
-            final ManaFilterConsolidation.ConsolidationFeasibility consolidationFeasibility) {
-        return ManaFilterConsolidation.hasManaActivationCost(ma)
-                && consolidationFeasibility.canActivateFilter(ai, ma, manaAbilityMap, false);
     }
 
     static final class ManaAbilitySortContext {
@@ -315,7 +286,6 @@ final class ManaAbilitySort {
         final SpellAbility spellBeingPaid;
         final ManaFilterConsolidation.ConsolidationFeasibility consolidationFeasibility;
         private final Map<SpellAbility, Boolean> consolidatesCache = new IdentityHashMap<>();
-        private final Map<SpellAbility, ManaSourceTraits> traitsMap = new IdentityHashMap<>();
 
         ManaAbilitySortContext(final Player ai, final ListMultimap<Integer, SpellAbility> manaAbilityMap,
                 final ManaCostBeingPaid cost, final int unpaidGeneric, final int unpaidColoredShards,
@@ -355,10 +325,6 @@ final class ManaAbilitySort {
                     ManaFilterConsolidation.hasManaActivationCost(k)
                             && consolidationFeasibility.canActivateFilter(ai, k, manaAbilityMap, false));
         }
-
-        ManaSourceTraits traits(final SpellAbility ma) {
-            return traitsMap.computeIfAbsent(ma, k -> ManaSourceTraits.of(k, this));
-        }
     }
 
     static List<Integer> computeHandColorPreferences(final SpellAbility sa,
@@ -370,6 +336,20 @@ final class ManaAbilitySort {
         if (ap == null) {
             return null;
         }
+        final ManaPaymentContext.ManaPaymentPlanCache cache = ManaPaymentContext.ManaPaymentPlanCache.bound();
+        final Card host = sa.getHostCard();
+        if (cache == null || host == null) {
+            return computeHandColorPreferences(sa, ap);
+        }
+        List<Integer> prefs = cache.handColorPrefsByHost.get(host);
+        if (prefs == null) {
+            prefs = computeHandColorPreferences(sa, ap);
+            cache.handColorPrefsByHost.put(host, prefs);
+        }
+        return prefs;
+    }
+
+    private static List<Integer> computeHandColorPreferences(final SpellAbility sa, final Player ap) {
         CardCollection hand = new CardCollection(ap.getCardsIn(ZoneType.Hand));
         hand.remove(sa.getHostCard());
         AiDeckStatistics stats = AiDeckStatistics.fromCards(hand);
@@ -391,7 +371,7 @@ final class ManaAbilitySort {
         if (!rejectColorlessOpponent) {
             return any ? 0 : 1;
         }
-        if (effectiveGenericColorPreference(ctx).reservesColorless()) {
+        if (ctx.genericColorPref.reservesColorless()) {
             return any ? 0 : 1;
         }
         return any || ManaPaymentExecution.producesOnlyColorless(ma) ? 0 : 1;
@@ -406,17 +386,6 @@ final class ManaAbilitySort {
             return Integer.MAX_VALUE;
         }
         return ManaFilterConsolidation.getFilterActivationCMC(ma);
-    }
-
-    /** Generic ranking may shift once colored pips are paid (prefer {C} over an extra basic). */
-    static GenericColorPreference effectiveGenericColorPreference(final ManaAbilitySortContext ctx) {
-        if (ctx.genericColorPref == GenericColorPreference.RESERVE_COLORLESS) {
-            return ctx.genericColorPref;
-        }
-        if (!ManaPaymentExecution.hasUnpaidColoredShards(ctx.cost)) {
-            return GenericColorPreference.PREFER_COLORLESS;
-        }
-        return ctx.genericColorPref;
     }
 
     /** 0 = consolidating multi-pip/combo filter, 1 = other. Independent of the other item. */
@@ -493,11 +462,11 @@ final class ManaAbilitySort {
         final int[] key = new int[24];
         int i = 0;
         if (shard.isGeneric()) {
-            final ManaSourceTraits t = ctx.traits(ma);
-            key[i++] = (ctx.unpaidGeneric == 1 && t.tightFor(1)) ? 0 : 1;
+            final ManaSourceTraits t = ManaSourceTraits.of(ma);
+            key[i++] = (ctx.unpaidGeneric == 1 && ManaPaymentExecution.isTightGenericProducer(ma, 1)) ? 0 : 1;
             key[i++] = ctx.unpaidGeneric >= 2 ? genericMultiPipRank(ctx, ma) : 0;
             key[i++] = ctx.unpaidGeneric >= 2 ? anyManaPreferenceClass(ctx, ma, true) : 0;
-            key[i++] = rankGenericManaSource(ma, effectiveGenericColorPreference(ctx));
+            key[i++] = rankGenericManaSource(ma, ctx.genericColorPref);
             key[i++] = anyManaFilterCmcKey(ma);
             key[i++] = ctx.unpaidGeneric >= 2 && ManaPaymentExecution.doesNotUntapNormally(ma) ? 1 : 0;
             key[i++] = ctx.unpaidGeneric >= 2 && ManaPaymentExecution.isMultiManaProducer(ma) ? 0 : 1;
@@ -541,7 +510,7 @@ final class ManaAbilitySort {
         }
         key[i++] = ManaFilterConsolidation.hasManaActivationCost(ma) ? 1 : 0;
         key[i++] = producesShardMana(ma, shard) ? 0 : 1;
-        key[i++] = ma.calculateScoreForManaAbility();
+        key[i++] = ManaSourceTraits.of(ma).manaScore;
         key[i++] = host == null ? 0 : host.getId();
         key[i++] = ma.getId();
         return key;
@@ -603,6 +572,23 @@ final class ManaAbilitySort {
                 coloredShardCount, genericColorPref, manaCardMap, cardRank, colorsMostCommon, sa,
                 consolidationFeasibility);
 
+        // AIManaPref ("W:2" etc.) is a property of the spell, not of the shard — parse it once.
+        String manaPref = sa.getParamOrDefault("AIManaPref", "");
+        if (manaPref.isEmpty() && sa.getHostCard() != null && sa.getHostCard().hasSVar("AIManaPref")) {
+            manaPref = sa.getHostCard().getSVar("AIManaPref");
+        }
+        String preferredShard = null;
+        int preferredShardAmount = 3;
+        if (!manaPref.isEmpty()) {
+            final String[] prefShardInfo = manaPref.split(":");
+            if (!prefShardInfo[0].isEmpty()) {
+                preferredShard = prefShardInfo[0];
+                if (prefShardInfo.length > 1) {
+                    preferredShardAmount = Integer.parseInt(prefShardInfo[1]);
+                }
+            }
+        }
+
         for (final ManaCostShard shard : sourcesForShards.keySet()) {
             final List<SpellAbility> newAbilities = new ArrayList<>(sourcesForShards.get(shard));
             final Map<SpellAbility, int[]> sortKeys = new IdentityHashMap<>();
@@ -610,23 +596,11 @@ final class ManaAbilitySort {
                 sortKeys.put(ma, manaSortKey(ctx, ma, shard));
             }
             newAbilities.sort((a1, a2) -> compareSortKeys(sortKeys.get(a1), sortKeys.get(a2)));
-            final List<SpellAbility> trimmed = trimFungibleManaCandidates(newAbilities, shard, cost, ai);
-            sourcesForShards.replaceValues(shard, trimmed);
-
-            String manaPref = sa.getParamOrDefault("AIManaPref", "");
-            if (manaPref.isEmpty() && sa.getHostCard() != null && sa.getHostCard().hasSVar("AIManaPref")) {
-                manaPref = sa.getHostCard().getSVar("AIManaPref");
+            List<SpellAbility> ordered = trimFungibleManaCandidates(newAbilities, shard, cost, ai);
+            if (preferredShard != null) {
+                ordered = applyAIManaPrefReorder(ordered, preferredShard, preferredShardAmount);
             }
-            if (!manaPref.isEmpty()) {
-                final String[] prefShardInfo = manaPref.split(":");
-                final String preferredShard = prefShardInfo[0];
-                final int preferredShardAmount = prefShardInfo.length > 1
-                        ? Integer.parseInt(prefShardInfo[1]) : 3;
-                if (!preferredShard.isEmpty()) {
-                    sourcesForShards.replaceValues(shard,
-                            applyAIManaPrefReorder(trimmed, preferredShard, preferredShardAmount));
-                }
-            }
+            sourcesForShards.replaceValues(shard, ordered);
         }
     }
 
