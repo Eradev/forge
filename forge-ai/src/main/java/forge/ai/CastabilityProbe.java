@@ -13,7 +13,6 @@ import forge.game.player.Player;
 import forge.game.spellability.SpellAbility;
 import forge.game.zone.ZoneType;
 
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
@@ -32,7 +31,9 @@ public final class CastabilityProbe {
     /** System property {@code forge.manaPayment.castabilityProbe} overrides preference when set. */
     private static final String SYS_PROP = "forge.manaPayment.castabilityProbe";
 
-    private static boolean defaultEnabled = true;
+    private static volatile boolean defaultEnabled = true;
+    /** Resolved once from {@link #SYS_PROP} + {@link #defaultEnabled}; cleared by the setters below. */
+    private static volatile Boolean resolvedEnabled;
     private static int dryRunCountForTests;
 
     private CastabilityProbe() {
@@ -40,22 +41,27 @@ public final class CastabilityProbe {
 
     /** Whether castability probing is active (preference / system property). */
     public static boolean isEnabled() {
-        final String prop = System.getProperty(SYS_PROP);
-        if (prop != null) {
-            return Boolean.parseBoolean(prop);
+        Boolean enabled = resolvedEnabled;
+        if (enabled == null) {
+            final String prop = System.getProperty(SYS_PROP);
+            enabled = prop != null ? Boolean.parseBoolean(prop) : defaultEnabled;
+            resolvedEnabled = enabled;
         }
-        return defaultEnabled;
+        return enabled;
     }
 
     /** Set default from Forge preferences at startup (see {@link forge.model.FModel}). */
     public static void setDefaultEnabled(final boolean enabled) {
         defaultEnabled = enabled;
+        resolvedEnabled = null;
     }
 
     /** Test hook: enable probe and clear JVM override (see {@link forge.ai.controller.AutoPaymentTest}). */
     public static void enableForTests() {
         System.clearProperty(SYS_PROP);
         defaultEnabled = true;
+        resolvedEnabled = null;
+        ManaPaymentTracer.refreshFlags();
     }
 
     /**
@@ -102,19 +108,23 @@ public final class CastabilityProbe {
         int bestEfficiency = Integer.MAX_VALUE;
         final boolean multicolorHand = ManaPaymentExecution.handHasMulticolorManaSpells(ai, sa, ctx);
         final ManaPaymentContext probeCtx = ctx.withFilterProbe();
-        for (final SpellAbility cand : capCandidates(candidates)) {
-            final Set<Card> sacSnapshot = ManaPaymentExecution.snapshotMemory(ai, MemorySet.PAYS_SAC_COST);
-            final Set<Card> tapSnapshot = ManaPaymentExecution.snapshotMemory(ai, MemorySet.PAYS_TAP_COST);
-            final Set<Card> consumed = consumedBuilder.build(cand, sa, ai, probeCtx);
-            if (consumed == null) {
-                ManaPaymentExecution.restoreMemory(ai, MemorySet.PAYS_SAC_COST, sacSnapshot);
-                ManaPaymentExecution.restoreMemory(ai, MemorySet.PAYS_TAP_COST, tapSnapshot);
-                continue;
+        ManaPaymentExecution.AlternativeScan altScan = null;
+        List<SpellAbility> toProbe = capCandidates(candidates);
+        if (ManaPaymentContext.fastHeuristics() && toProbe.size() > 1) {
+            altScan = ManaPaymentExecution.AlternativeScan.of(candidates, toPay,
+                    ManaPaymentExecution.remainingPipsForShard(cost, toPay));
+            toProbe = mostEfficient(toProbe, cost, sa, ai, toPay, candidates, altScan, consumedBuilder, probeCtx);
+        }
+        for (final SpellAbility cand : toProbe) {
+            final int castable;
+            try (ManaPaymentExecution.ReservationSnapshot snap = ManaPaymentExecution.ReservationSnapshot.take(ai)) {
+                final Set<Card> consumed = consumedBuilder.build(cand, sa, ai, probeCtx);
+                if (consumed == null) {
+                    continue;
+                }
+                castable = countCastableSpellsAfterPayment(ai, sa, consumed, probeCtx);
             }
-            final int castable = countCastableSpellsAfterPayment(ai, sa, consumed, probeCtx);
-            ManaPaymentExecution.restoreMemory(ai, MemorySet.PAYS_SAC_COST, sacSnapshot);
-            ManaPaymentExecution.restoreMemory(ai, MemorySet.PAYS_TAP_COST, tapSnapshot);
-            ManaPaymentTracer.logMain(test, "    castability " + cand.getHostCard() + " -> " + castable
+            ManaPaymentTracer.logMain(test, () -> "    castability " + cand.getHostCard() + " -> " + castable
                     + " hand/command spells remain", ctx);
             final boolean preferCand = multicolorHand && ManaPaymentExecution.isAnyMultiManaProducer(cand)
                     && preferMultiForGeneric;
@@ -129,16 +139,19 @@ public final class CastabilityProbe {
                     takeCand = true;
                     bestEfficiency = Integer.MAX_VALUE;
                 } else if (!preferCand && !preferBest) {
-                    final ManaPaymentExecution.PaymentImpact impact = ManaPaymentExecution.evaluatePaymentImpact(cost,
-                            sa, ai, toPay, cand, candidates, test, probeCtx);
-                    final int candEfficiency = impact.efficiencyScore;
+                    if (altScan == null) {
+                        altScan = ManaPaymentExecution.AlternativeScan.of(candidates, toPay,
+                                ManaPaymentExecution.remainingPipsForShard(cost, toPay));
+                    }
+                    final int candEfficiency = ManaPaymentExecution.evaluatePaymentImpact(cost,
+                            sa, ai, toPay, cand, candidates, altScan, test, probeCtx).efficiencyScore();
                     if (best == null) {
                         takeCand = true;
                         bestEfficiency = candEfficiency;
                     } else {
                         if (bestEfficiency == Integer.MAX_VALUE) {
                             bestEfficiency = ManaPaymentExecution.evaluatePaymentImpact(cost, sa, ai, toPay, best,
-                                    candidates, test, probeCtx).efficiencyScore;
+                                    candidates, altScan, test, probeCtx).efficiencyScore();
                         }
                         if (tieBreakPrefers(cand, best, candEfficiency, bestEfficiency, toPay, cost, ai, sa)) {
                             takeCand = true;
@@ -153,6 +166,39 @@ public final class CastabilityProbe {
             }
         }
         return best;
+    }
+
+    /**
+     * Opt-in ({@link ManaPaymentContext#fastHeuristics}): keep only the candidates tied on the cheapest
+     * {@link ManaPaymentExecution#paymentEfficiencyScore}, so castability dry-runs are spent on real ties
+     * instead of every source. Candidates whose consumed set cannot be built are dropped.
+     */
+    private static List<SpellAbility> mostEfficient(final List<SpellAbility> probeList, final ManaCostBeingPaid cost,
+            final SpellAbility sa, final Player ai, final ManaCostShard toPay, final List<SpellAbility> alternatives,
+            final ManaPaymentExecution.AlternativeScan altScan, final ConsumedBuilder consumedBuilder,
+            final ManaPaymentContext probeCtx) {
+        final List<SpellAbility> best = new java.util.ArrayList<>();
+        int bestScore = Integer.MAX_VALUE;
+        for (final SpellAbility cand : probeList) {
+            final int score;
+            try (ManaPaymentExecution.ReservationSnapshot snap = ManaPaymentExecution.ReservationSnapshot.take(ai)) {
+                final Set<Card> consumed = consumedBuilder.build(cand, sa, ai, probeCtx);
+                if (consumed == null) {
+                    continue;
+                }
+                score = ManaPaymentExecution.paymentEfficiencyScore(cand,
+                        ManaPaymentExecution.effectiveCardsConsumedForPayment(cost, sa, ai, toPay, cand, consumed),
+                        cost, toPay, alternatives, altScan, ai, sa, probeCtx);
+            }
+            if (score < bestScore) {
+                bestScore = score;
+                best.clear();
+            }
+            if (score == bestScore) {
+                best.add(cand);
+            }
+        }
+        return best.isEmpty() ? probeList : best;
     }
 
     /** Record a colored-shard failure with zero candidates during a castability nested dry-run. */
@@ -199,7 +245,8 @@ public final class CastabilityProbe {
         return count;
     }
 
-    private static List<SpellAbility> capCandidates(final List<SpellAbility> candidates) {
+    /** First {@link #CANDIDATE_CAP} candidates (bounds the number of nested dry-runs per shard). */
+    static List<SpellAbility> capCandidates(final List<SpellAbility> candidates) {
         if (candidates.size() <= CANDIDATE_CAP) {
             return candidates;
         }
@@ -332,19 +379,26 @@ public final class CastabilityProbe {
             if (host == null || seenHosts.contains(host)) {
                 continue;
             }
-            if (!isManaSourceAvailableAfterReservation(ai, ma, reserved)) {
-                continue;
-            }
+            // Single availability (canPlay) pass per ability; the host counts only when {@code ma} itself
+            // is available, and contributes the largest amount among its available mana abilities.
+            boolean gateChecked = false;
+            boolean gate = false;
             int maxForHost = 0;
             for (final SpellAbility ma2 : host.getManaAbilities()) {
-                if (!isManaSourceAvailableAfterReservation(ai, ma2, reserved)) {
-                    continue;
+                final boolean avail = isManaSourceAvailableAfterReservation(ai, ma2, reserved);
+                if (ma2 == ma) {
+                    gateChecked = true;
+                    gate = avail;
                 }
-                ma2.setActivatingPlayer(ai);
-                if (!ma2.canPlay()) {
-                    continue;
+                if (avail) {
+                    maxForHost = Math.max(maxForHost, ma2.amountOfManaGenerated(true));
                 }
-                maxForHost = Math.max(maxForHost, ma2.amountOfManaGenerated(true));
+            }
+            if (!gateChecked) {
+                gate = isManaSourceAvailableAfterReservation(ai, ma, reserved);
+            }
+            if (!gate) {
+                continue;
             }
             seenHosts.add(host);
             available += maxForHost;
@@ -356,16 +410,8 @@ public final class CastabilityProbe {
             final ManaPaymentContext ctx) {
         final ManaPaymentContext.CastabilityProbeScratch probe = ctx.caches.castabilityProbe;
         probe.clearLastFailure();
-        final List<Card> reserved = new ArrayList<>();
-        for (Card c : consumed) {
-            if (!AiCardMemory.isRememberedCard(ai, c, MemorySet.HELD_MANA_SOURCES_FOR_NEXT_SPELL)) {
-                AiCardMemory.rememberCard(ai, c, MemorySet.HELD_MANA_SOURCES_FOR_NEXT_SPELL);
-                reserved.add(c);
-            }
-        }
-        final Set<Card> sacSnapshot = ManaPaymentExecution.snapshotMemory(ai, MemorySet.PAYS_SAC_COST);
-        final Set<Card> tapSnapshot = ManaPaymentExecution.snapshotMemory(ai, MemorySet.PAYS_TAP_COST);
-        try {
+        try (ManaPaymentExecution.ReservationSnapshot snap =
+                ManaPaymentExecution.ReservationSnapshot.take(ai).holdingForNextSpell(consumed)) {
             dryRunCountForTests++;
             final boolean result = ComputerUtilMana.payManaCostForCastabilityProbe(candSa.getPayCosts(), candSa, ai,
                     ctx);
@@ -375,11 +421,6 @@ public final class CastabilityProbe {
             return result;
         } finally {
             probe.clearLastFailure();
-            for (Card c : reserved) {
-                AiCardMemory.forgetCard(ai, c, MemorySet.HELD_MANA_SOURCES_FOR_NEXT_SPELL);
-            }
-            ManaPaymentExecution.restoreMemory(ai, MemorySet.PAYS_SAC_COST, sacSnapshot);
-            ManaPaymentExecution.restoreMemory(ai, MemorySet.PAYS_TAP_COST, tapSnapshot);
         }
     }
 
