@@ -110,9 +110,15 @@ final class ManaPaymentExecution {
     /**
      * A source with no mana activation cost that may pay a filter's nested generic cost ({1}, etc.).
      * Includes sacrifice rocks; {@link #sortFreeSourcesForNestedActivation} ranks them below tap sources.
+     * The filter's own host qualifies only through a sibling whose cost doesn't conflict with the filter's
+     * (Calciform Pools taps for {@code {C}} to pay its own {@code {1}, Remove X storage counters}).
      */
-    static boolean isFreeManaSourceForNestedActivation(final SpellAbility ma, final Card filterHost) {
-        if (ma == null || ma.getHostCard() == filterHost) {
+    static boolean isFreeManaSourceForNestedActivation(final SpellAbility ma, final SpellAbility filterAb) {
+        if (ma == null || ma == filterAb) {
+            return false;
+        }
+        if (filterAb != null && ma.getHostCard() == filterAb.getHostCard()
+                && !ManaSourceTraits.of(ma).leavesSiblingUsable(ManaSourceTraits.of(filterAb))) {
             return false;
         }
         final Cost payCosts = ma.getPayCosts();
@@ -124,8 +130,8 @@ final class ManaPaymentExecution {
      * this payment, and untapped when the ability has a tap cost).
      */
     static boolean isCurrentlyAvailableForNestedActivation(final Player ai, final SpellAbility ma,
-            final Card filterHost) {
-        if (!isFreeManaSourceForNestedActivation(ma, filterHost)) {
+            final SpellAbility filterAb) {
+        if (!isFreeManaSourceForNestedActivation(ma, filterAb)) {
             return false;
         }
         final Card host = ma.getHostCard();
@@ -1000,11 +1006,10 @@ final class ManaPaymentExecution {
             return false;
         }
         final ListMultimap<Integer, SpellAbility> manaAbilityMap = ComputerUtilMana.getOrBuildManaAbilityMap(ai, true, ctx);
-        final Card filterHost = filter.getHostCard();
         final int needed = cost.getGenericManaAmount() + activationGeneric;
         int reusableGenericSources = 0;
         for (final SpellAbility candidate : manaAbilityMap.get(ManaAtom.GENERIC)) {
-            if (isFreeReusableSourceForNestedActivation(candidate, filterHost)) {
+            if (isFreeReusableSourceForNestedActivation(candidate, filter)) {
                 reusableGenericSources++;
                 if (reusableGenericSources >= needed) {
                     return false;
@@ -1015,8 +1020,8 @@ final class ManaPaymentExecution {
     }
 
     /** Free nested-activation source that is not a one-shot (Petal, Treasure, etc.). */
-    static boolean isFreeReusableSourceForNestedActivation(final SpellAbility ma, final Card filterHost) {
-        return isFreeManaSourceForNestedActivation(ma, filterHost) && !ManaFilterConsolidation.isDisposableManaAbility(ma);
+    static boolean isFreeReusableSourceForNestedActivation(final SpellAbility ma, final SpellAbility filterAb) {
+        return isFreeManaSourceForNestedActivation(ma, filterAb) && !ManaFilterConsolidation.isDisposableManaAbility(ma);
     }
 
     /**
@@ -1045,17 +1050,16 @@ final class ManaPaymentExecution {
         if (costMana == null) {
             return false;
         }
-        final Card filterHost = filter.getHostCard();
         final ManaCost activation = reusableOnly ? costMana.getManaCostFor(filter) : costMana.getMana();
         if (activation.getGenericCost() > 0
-                && !hasActivatorInGenericBucket(ai, manaAbilityMap, filterHost, reusableOnly)) {
+                && !hasActivatorInGenericBucket(ai, manaAbilityMap, filter, reusableOnly)) {
             return false;
         }
         for (final ManaCostShard shard : activation) {
             if (reusableOnly && (shard.isGeneric() || shard == ManaCostShard.COLORLESS)) {
                 continue;
             }
-            if (!hasActivatorForShard(ai, manaAbilityMap, shard, filterHost, reusableOnly)) {
+            if (!hasActivatorForShard(ai, manaAbilityMap, shard, filter, reusableOnly)) {
                 return false;
             }
         }
@@ -1064,17 +1068,17 @@ final class ManaPaymentExecution {
 
     /** {@code {1}} activation: any free tap in the generic bucket (all mana sources are indexed here). */
     static boolean hasActivatorInGenericBucket(final Player ai,
-            final ListMultimap<Integer, SpellAbility> manaAbilityMap, final Card filterHost,
+            final ListMultimap<Integer, SpellAbility> manaAbilityMap, final SpellAbility filter,
             final boolean reusableOnly) {
         for (final SpellAbility candidate : manaAbilityMap.get(ManaAtom.GENERIC)) {
             if (reusableOnly) {
-                if (!isFreeReusableSourceForNestedActivation(candidate, filterHost)) {
+                if (!isFreeReusableSourceForNestedActivation(candidate, filter)) {
                     continue;
                 }
-            } else if (!isFreeManaSourceForNestedActivation(candidate, filterHost)) {
+            } else if (!isFreeManaSourceForNestedActivation(candidate, filter)) {
                 continue;
             }
-            if (isCurrentlyAvailableForNestedActivation(ai, candidate, filterHost)) {
+            if (isCurrentlyAvailableForNestedActivation(ai, candidate, filter)) {
                 return true;
             }
         }
@@ -1084,20 +1088,20 @@ final class ManaPaymentExecution {
     /** True when a free activator can pay this colored/hybrid shard. */
     static boolean hasActivatorForShard(final Player ai,
             final ListMultimap<Integer, SpellAbility> manaAbilityMap, final ManaCostShard shard,
-            final Card filterHost, final boolean reusableOnly) {
+            final SpellAbility filter, final boolean reusableOnly) {
         for (final byte color : ManaAtom.MANATYPES) {
             if (!shard.canBePaidWithManaOfColor(color)) {
                 continue;
             }
             for (final SpellAbility candidate : manaAbilityMap.get((int) color)) {
                 if (reusableOnly) {
-                    if (!isFreeReusableSourceForNestedActivation(candidate, filterHost)) {
+                    if (!isFreeReusableSourceForNestedActivation(candidate, filter)) {
                         continue;
                     }
-                } else if (!isFreeManaSourceForNestedActivation(candidate, filterHost)) {
+                } else if (!isFreeManaSourceForNestedActivation(candidate, filter)) {
                     continue;
                 }
-                if (isCurrentlyAvailableForNestedActivation(ai, candidate, filterHost)) {
+                if (isCurrentlyAvailableForNestedActivation(ai, candidate, filter)) {
                     return true;
                 }
             }
@@ -2231,6 +2235,76 @@ final class ManaPaymentExecution {
         pool.removeIf(s -> s.getHostCard() == host && (s == used || !u.leavesSiblingUsable(ManaSourceTraits.of(s))));
     }
 
+    /** Largest X a variable-X mana ability can currently pay for (storage counters on the host, etc.). */
+    static int maxVariableManaX(final SpellAbility ma, final Player ai) {
+        final Cost payCosts = ma.getPayCosts();
+        if (payCosts == null) {
+            return 0;
+        }
+        final Integer max = payCosts.getMaxForNonManaX(ma, ai, false);
+        return max == null ? 0 : Math.max(0, max);
+    }
+
+    /**
+     * Set a variable-X ability's X to the planner's choice for this payment when one was recorded, else to
+     * the maximum the host can pay for. Called from every board scan (map build, estimates, traits) so a
+     * memo rebuild after a real activation cannot silently revert a chosen X to "all counters".
+     */
+    static void syncVariableManaX(final SpellAbility ma, final Player ai) {
+        final ManaPaymentContext.ManaPaymentPlanCache cache = ManaPaymentContext.ManaPaymentPlanCache.bound();
+        final Integer chosen = cache == null ? null : cache.chosenVariableX.get(ma);
+        ma.setXManaCostPaid(chosen != null ? chosen : maxVariableManaX(ma, ai));
+    }
+
+    /** Drop the recorded X once the ability has really been activated; later scans see the new maximum. */
+    static void forgetChosenVariableManaX(final SpellAbility ma) {
+        final ManaPaymentContext.ManaPaymentPlanCache cache = ManaPaymentContext.ManaPaymentPlanCache.bound();
+        if (cache != null) {
+            cache.chosenVariableX.remove(ma);
+        }
+    }
+
+    /**
+     * Pick X for a variable-X mana ability ({@link ManaSourceTraits#variableX}) about to pay toward
+     * {@code cost}: enough to cover every unpaid pip its colors can pay, capped by what the host can afford,
+     * so Calciform Pools removes one storage counter for {@code {W}} rather than all of them. No-op for other
+     * abilities. Both planning and production call this right before predicting / producing the mana, so the
+     * removal count and the mana produced agree; the choice is remembered for the rest of the payment.
+     */
+    static void chooseVariableManaX(final SpellAbility ma, final ManaCostBeingPaid cost, final Player ai) {
+        if (!ManaSourceTraits.of(ma).variableX) {
+            return;
+        }
+        final int max = maxVariableManaX(ma, ai);
+        final AbilityManaPart mp = ma.getManaPart();
+        final String produced = mp == null ? "" : mp.isComboMana() ? mp.getComboColors(ma)
+                : mp.isAnyMana() ? "W U B R G" : mp.getOrigProduced();
+        int needed = 0;
+        for (final ManaCostShard shard : cost.getDistinctShards()) {
+            final int unpaid = cost.getUnpaidShards(shard);
+            if (unpaid <= 0) {
+                continue;
+            }
+            if (shard.isGeneric()) {
+                needed += unpaid;
+                continue;
+            }
+            for (final String color : produced.trim().split("\\s+")) {
+                final byte atom = ManaAtom.fromName(color);
+                if (atom != 0 && shard.canBePaidWithManaOfColor(atom)) {
+                    needed += unpaid;
+                    break;
+                }
+            }
+        }
+        final int x = Math.min(max, needed);
+        final ManaPaymentContext.ManaPaymentPlanCache cache = ManaPaymentContext.ManaPaymentPlanCache.bound();
+        if (cache != null) {
+            cache.chosenVariableX.put(ma, x);
+        }
+        ma.setXManaCostPaid(x);
+    }
+
     /** Record tap/sacrifice reservation during test-mode planning so it matches production auto-pay. */
     static void rememberManaSourceConsumed(final Player ai, final SpellAbility ma) {
         if (hasTapCost(ma)) {
@@ -2313,14 +2387,16 @@ final class ManaPaymentExecution {
             final List<SpellAbility> freeCandidates = new ArrayList<>();
             boolean reusableForThisShard = false;
             for (SpellAbility ma : saList) {
-                if (!isFreeManaSourceForNestedActivation(ma, filterHost)) {
+                if (!isFreeManaSourceForNestedActivation(ma, filterAb)) {
                     continue;
                 }
-                // Combo lands (Cascade Bluffs) bank mana; don't spend them paying another filter's activation.
-                if (hostHasComboConsolidator(ma.getHostCard()) && isManaActivationConsolidator(filterAb)) {
+                // Combo lands (Cascade Bluffs) bank mana; don't spend them paying another filter's activation
+                // (the filter's own host paying for itself, e.g. Calciform Pools' {T}, is fine).
+                if (ma.getHostCard() != filterHost && hostHasComboConsolidator(ma.getHostCard())
+                        && isManaActivationConsolidator(filterAb)) {
                     continue;
                 }
-                if (!isCurrentlyAvailableForNestedActivation(ai, ma, filterHost)) {
+                if (!isCurrentlyAvailableForNestedActivation(ai, ma, filterAb)) {
                     continue;
                 }
                 if (!ManaFilterConsolidation.isDisposableManaAbility(ma)) {
@@ -2434,6 +2510,7 @@ final class ManaPaymentExecution {
             return false;
         }
         ai.getGame().getStack().addAndUnfreeze(filterAb);
+        forgetChosenVariableManaX(filterAb);
         ManaSourceTraits.invalidate();
         if (shouldApplyProducedManaToShardOnly(filterAb, cost, toPay, ai)) {
             return payFilterManaTowardShardOnly(sa, cost, toPay, filterAb, manapool);
@@ -2597,6 +2674,7 @@ final class ManaPaymentExecution {
             final List<Mana> manaSpentToPay, final List<Mana> testDepositedSurplus,
             final boolean test, final boolean effect, final CardCollection planOut,
             final List<SpellAbility> paymentList, final ManaPaymentContext ctx) {
+        chooseVariableManaX(filterAb, spellCost, ai);
         paymentList.add(filterAb);
         final boolean tapReserved = hasTapCost(filterAb);
         if (tapReserved) {
@@ -2640,6 +2718,7 @@ final class ManaPaymentExecution {
     static boolean simulateAndBankConsolidator(final SpellAbility filterAb, final SpellAbility sa,
             final Player ai, final ManaCostBeingPaid spellCost, final List<Mana> surplus,
             final ManaPaymentContext ctx) {
+        chooseVariableManaX(filterAb, spellCost, ai);
         if (filterAb.getPayCosts() != null && filterAb.getPayCosts().hasManaCost()) {
             if (!payNestedActivationCost(filterAb, sa, spellCost, ai, ArrayListMultimap.create(), null, surplus, true, false,
                     null, ctx == null ? ManaPaymentContext.outer() : ctx.detachedProbe())) {
@@ -2679,6 +2758,7 @@ final class ManaPaymentExecution {
             return false;
         }
         ai.getGame().getStack().addAndUnfreeze(filterAb);
+        forgetChosenVariableManaX(filterAb);
         ManaSourceTraits.invalidate();
         return true;
     }
@@ -2779,6 +2859,7 @@ final class ManaPaymentExecution {
             final List<Mana> testDepositedSurplus, final boolean test, final boolean effect,
             final ManaPool manapool, final CardCollection outTapped, final ManaPaymentContext ctx) {
         final boolean traceTaps = ManaPaymentTracer.tapTraceEnabled(test, ctx);
+        chooseVariableManaX(saPayment, cost, ai);
         if (test) {
             if (saPayment.getPayCosts() != null && saPayment.getPayCosts().hasManaCost()) {
                 if (!payNestedActivationCost(saPayment, sa, cost, ai, sourcesForShards, manaSpentToPay,
