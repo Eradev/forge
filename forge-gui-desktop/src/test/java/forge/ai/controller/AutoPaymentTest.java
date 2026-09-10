@@ -1076,4 +1076,39 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals(1, countTapped(game, "Reliquary Tower"));
         AssertJUnit.assertEquals(0, countTapped(game, "Plains"));
     }
+
+    /**
+     * TimSort only checks the comparator contract once a shard bucket has 32+ abilities.
+     * Mixed colorless, colored, filters, and multi-mana sources used to throw
+     * IllegalArgumentException from sortManaAbilities.
+     */
+    @Test
+    public void mixedManaBoardDoesNotViolateSortContract() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCards("Forest", 10, p);
+        addCards("Plains", 10, p);
+        addCards("Wastes", 8, p);
+        addCards("Island", 6, p);
+        addCard("Study Hall", p);
+        addCard("Sol Ring", p);
+        addCard("Gilded Lotus", p);
+        addCard("Mana Vault", p);
+        addCard("Chromatic Sphere", p);
+        addCard("Chromatic Lantern", p);
+        addCard("Selesnya Signet", p);
+        addCard("Reliquary Tower", p);
+        addCard("Command Tower", p);
+        Card spell = addCardToZone("Wrath of God", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("8"), sa));
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("4 W G"), sa));
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("2 W W"), sa));
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("2 W W"), sa));
+    }
 }

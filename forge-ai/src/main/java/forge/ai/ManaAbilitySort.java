@@ -129,7 +129,7 @@ final class ManaAbilitySort {
                 }
             }
         }
-        final int rankCmp = rankGenericManaSource(a, pref) - rankGenericManaSource(b, pref);
+        final int rankCmp = Integer.compare(rankGenericManaSource(a, pref), rankGenericManaSource(b, pref));
         if (rankCmp != 0) {
             return rankCmp;
         }
@@ -139,7 +139,7 @@ final class ManaAbilitySort {
                 return disposableCmp;
             }
         }
-        final int filterCostCmp = ManaFilterConsolidation.compareAnyManaFilterActivationCost(a, b);
+        final int filterCostCmp = Integer.compare(anyManaFilterCmcKey(a), anyManaFilterCmcKey(b));
         if (filterCostCmp != 0) {
             return filterCostCmp;
         }
@@ -273,10 +273,6 @@ final class ManaAbilitySort {
             return ManaPaymentExecution.isTightGenericProducer(ability, remaining);
         }
 
-        boolean directFor(final ManaCostShard shard) {
-            return ManaPaymentExecution.producesShardDirectly(ability, shard);
-        }
-
         boolean consolidates(final ManaAbilitySortContext ctx) {
             if (consolidates == null) {
                 consolidates = ctx.consolidates(ability);
@@ -363,12 +359,6 @@ final class ManaAbilitySort {
         ManaSourceTraits traits(final SpellAbility ma) {
             return traitsMap.computeIfAbsent(ma, k -> ManaSourceTraits.of(k, this));
         }
-
-        int cardPreOrder(final SpellAbility a1, final SpellAbility a2) {
-            final Integer r1 = cardRank.get(a1.getHostCard());
-            final Integer r2 = cardRank.get(a2.getHostCard());
-            return (r1 == null ? Integer.MAX_VALUE : r1) - (r2 == null ? Integer.MAX_VALUE : r2);
-        }
     }
 
     static List<Integer> computeHandColorPreferences(final SpellAbility sa,
@@ -390,88 +380,32 @@ final class ManaAbilitySort {
                 .collect(Collectors.toList());
     }
 
-    static int compareAnyManaFilterPreference(final ManaAbilitySortContext ctx,
-            final SpellAbility ability1, final SpellAbility ability2, final boolean rejectColorlessOpponent) {
-        final boolean ab1Any = ManaFilterConsolidation.isAnyManaConsolidatingFilter(ability1) && ctx.consolidates(ability1);
-        final boolean ab2Any = ManaFilterConsolidation.isAnyManaConsolidatingFilter(ability2) && ctx.consolidates(ability2);
-        if (rejectColorlessOpponent) {
-            if (ab1Any && !ab2Any && !ManaPaymentExecution.producesOnlyColorless(ability2)) {
-                return -1;
-            }
-            if (ab2Any && !ab1Any && !ManaPaymentExecution.producesOnlyColorless(ability1)) {
-                return 1;
-            }
-        } else {
-            if (ab1Any && !ab2Any) {
-                return -1;
-            }
-            if (ab2Any && !ab1Any) {
-                return 1;
-            }
+    /**
+     * Independent sort key so any-mana vs colorless vs colored is a total order.
+     * Pairwise "prefer any-mana unless the other is colorless" is not transitive:
+     * Study Hall &lt; Forest, Forest ≡ Wastes, Wastes ≡ Study Hall.
+     */
+    static int anyManaPreferenceClass(final ManaAbilitySortContext ctx, final SpellAbility ma,
+            final boolean rejectColorlessOpponent) {
+        final boolean any = ManaFilterConsolidation.isAnyManaConsolidatingFilter(ma) && ctx.consolidates(ma);
+        if (!rejectColorlessOpponent) {
+            return any ? 0 : 1;
         }
-        return 0;
+        if (effectiveGenericColorPreference(ctx).reservesColorless()) {
+            return any ? 0 : 1;
+        }
+        return any || ManaPaymentExecution.producesOnlyColorless(ma) ? 0 : 1;
     }
 
-    static int compareGenericShardAbilities(final ManaAbilitySortContext ctx,
-            final SpellAbility ability1, final SpellAbility ability2) {
-        if (ctx.unpaidGeneric == 1) {
-            final ManaSourceTraits t1 = ctx.traits(ability1);
-            final ManaSourceTraits t2 = ctx.traits(ability2);
-            final boolean tight1 = t1.tightFor(1);
-            final boolean tight2 = t2.tightFor(1);
-            if (tight1 != tight2) {
-                return tight1 ? -1 : 1;
-            }
-            if (!ManaFilterConsolidation.hasManaActivationCost(ability1)
-                    && !ManaFilterConsolidation.hasManaActivationCost(ability2)) {
-                if (t1.producedAmount != t2.producedAmount) {
-                    return Integer.compare(t1.producedAmount, t2.producedAmount);
-                }
-            }
+    static int genericMultiPipRank(final ManaAbilitySortContext ctx, final SpellAbility ma) {
+        return ManaFilterConsolidation.isMultiPipActivationFilter(ma) && ctx.consolidates(ma) ? 0 : 1;
+    }
+
+    static int anyManaFilterCmcKey(final SpellAbility ma) {
+        if (!ManaFilterConsolidation.isAnyManaConsolidatingFilter(ma)) {
+            return Integer.MAX_VALUE;
         }
-        if (ctx.unpaidGeneric >= 2) {
-            final boolean ab1Multi = ManaFilterConsolidation.isMultiPipActivationFilter(ability1) && ctx.consolidates(ability1);
-            final boolean ab2Multi = ManaFilterConsolidation.isMultiPipActivationFilter(ability2) && ctx.consolidates(ability2);
-            if (ab1Multi != ab2Multi) {
-                return ab1Multi ? -1 : 1;
-            }
-            final boolean ab1Any = ManaFilterConsolidation.isAnyManaConsolidatingFilter(ability1) && ctx.consolidates(ability1);
-            final boolean ab2Any = ManaFilterConsolidation.isAnyManaConsolidatingFilter(ability2) && ctx.consolidates(ability2);
-            if (ab1Multi && ab2Any) {
-                return -1;
-            }
-            if (ab2Multi && ab1Any) {
-                return 1;
-            }
-            final int anyFilterCmp = compareAnyManaFilterPreference(ctx, ability1, ability2, true);
-            if (anyFilterCmp != 0) {
-                return anyFilterCmp;
-            }
-            final int prod1 = ManaFilterConsolidation.getManaProducedAmount(ability1);
-            final int prod2 = ManaFilterConsolidation.getManaProducedAmount(ability2);
-            if (!ManaFilterConsolidation.hasManaActivationCost(ability1)
-                    && !ManaFilterConsolidation.hasManaActivationCost(ability2)) {
-                final boolean noUntap1 = ManaPaymentExecution.doesNotUntapNormally(ability1);
-                final boolean noUntap2 = ManaPaymentExecution.doesNotUntapNormally(ability2);
-                if (noUntap1 != noUntap2) {
-                    return noUntap1 ? 1 : -1;
-                }
-                final boolean multi1 = ManaPaymentExecution.isMultiManaProducer(ability1);
-                final boolean multi2 = ManaPaymentExecution.isMultiManaProducer(ability2);
-                if (multi1 != multi2) {
-                    return multi1 ? -1 : 1;
-                }
-                if (multi1 && prod1 != prod2) {
-                    return Integer.compare(prod2, prod1);
-                }
-            }
-        }
-        final int filterCostCmp = ManaFilterConsolidation.compareAnyManaFilterActivationCost(ability1, ability2);
-        if (filterCostCmp != 0) {
-            return filterCostCmp;
-        }
-        return rankGenericManaSource(ability1, effectiveGenericColorPreference(ctx))
-                - rankGenericManaSource(ability2, effectiveGenericColorPreference(ctx));
+        return ManaFilterConsolidation.getFilterActivationCMC(ma);
     }
 
     /** Generic ranking may shift once colored pips are paid (prefer {C} over an extra basic). */
@@ -485,169 +419,143 @@ final class ManaAbilitySort {
         return ctx.genericColorPref;
     }
 
-    static int compareColoredShardAbilities(final ManaAbilitySortContext ctx,
-            final SpellAbility ability1, final SpellAbility ability2, final ManaCostShard shard) {
-        final boolean ab1Filter = ManaFilterConsolidation.hasManaActivationCost(ability1);
-        final boolean ab2Filter = ManaFilterConsolidation.hasManaActivationCost(ability2);
-        final boolean ab1Consolidates = ctx.consolidates(ability1);
-        final boolean ab2Consolidates = ctx.consolidates(ability2);
-        if (ab1Consolidates != ab2Consolidates && ctx.unpaidColoredShards >= 2
-                && (ManaFilterConsolidation.isMultiPipActivationFilter(ability1)
-                        || ManaFilterConsolidation.isMultiPipActivationFilter(ability2)
-                        || ManaFilterConsolidation.isComboConsolidatingFilter(ability1)
-                        || ManaFilterConsolidation.isComboConsolidatingFilter(ability2))) {
-            return ab1Consolidates ? -1 : 1;
-        }
-        if (ab1Filter != ab2Filter) {
-            if (ctx.unpaidGeneric == 0 && ctx.unpaidColoredShards >= 2) {
-                if (ab1Consolidates && ManaFilterConsolidation.isAnyManaConsolidatingFilter(ability1) && !ab2Filter) {
-                    return -1;
-                }
-                if (ab2Consolidates && ManaFilterConsolidation.isAnyManaConsolidatingFilter(ability2) && !ab1Filter) {
-                    return 1;
-                }
-            }
-            return ab1Filter ? 1 : -1;
-        }
-        if (ctx.cost.getUnpaidShards(shard) >= 2) {
-            final boolean direct1 = ctx.traits(ability1).directFor(shard);
-            final boolean direct2 = ctx.traits(ability2).directFor(shard);
-            final boolean anyMulti1 = ManaPaymentExecution.isAnyMultiManaProducer(ability1);
-            final boolean anyMulti2 = ManaPaymentExecution.isAnyMultiManaProducer(ability2);
-            if (anyMulti1 && direct2) {
-                return 1;
-            }
-            if (anyMulti2 && direct1) {
-                return -1;
-            }
-            final boolean directMulti1 = ManaPaymentExecution.isDirectColoredMultiProducer(ability1, shard);
-            final boolean directMulti2 = ManaPaymentExecution.isDirectColoredMultiProducer(ability2, shard);
-            final boolean singlePip1 = ManaPaymentExecution.isSinglePipDirectColoredProducer(ability1, shard);
-            final boolean singlePip2 = ManaPaymentExecution.isSinglePipDirectColoredProducer(ability2, shard);
-            if (directMulti1 && singlePip2) {
-                return 1;
-            }
-            if (directMulti2 && singlePip1) {
-                return -1;
-            }
-        } else if (ctx.cost.getUnpaidShards(shard) == 1) {
-            final boolean directMulti1 = ManaPaymentExecution.isDirectColoredMultiProducer(ability1, shard);
-            final boolean directMulti2 = ManaPaymentExecution.isDirectColoredMultiProducer(ability2, shard);
-            final boolean singlePip1 = ManaPaymentExecution.isSinglePipDirectColoredProducer(ability1, shard);
-            final boolean singlePip2 = ManaPaymentExecution.isSinglePipDirectColoredProducer(ability2, shard);
-            if (directMulti1 && singlePip2) {
-                return 1;
-            }
-            if (directMulti2 && singlePip1) {
-                return -1;
-            }
-        }
-        if (ab1Filter && ab2Filter) {
-            final int filterCostCmp = ManaFilterConsolidation.compareAnyManaFilterActivationCost(ability1, ability2);
-            if (filterCostCmp != 0) {
-                return filterCostCmp;
-            }
-        }
-        return 0;
-    }
-
-    static int compareGenericTiebreak(final ManaAbilitySortContext ctx,
-            final SpellAbility ability1, final SpellAbility ability2) {
-        if (!ctx.manaCardMap.get(ability1.getHostCard()).equals(ctx.manaCardMap.get(ability2.getHostCard()))) {
-            return 0;
-        }
-        final int colorlessCmp = compareColorlessPreference(ability1, ability2, ctx.genericColorPref.reservesColorless());
-        if (colorlessCmp != 0) {
-            return colorlessCmp;
-        }
-        if (ctx.colorsMostCommon == null) {
-            return 0;
-        }
-        for (Integer col : ctx.colorsMostCommon) {
-            final Set<Card> hosts = ctx.hostsByColor.get(col);
-            if (hosts == null) {
-                continue;
-            }
-            final boolean fromCommonColorSource1 = hosts.contains(ability1.getHostCard());
-            final boolean fromCommonColorSource2 = hosts.contains(ability2.getHostCard());
-            if (fromCommonColorSource1 && !fromCommonColorSource2) {
-                return 1;
-            }
-            if (!fromCommonColorSource1 && fromCommonColorSource2) {
-                return -1;
-            }
-        }
-        return 0;
-    }
-
-    static int compareDifferentCards(final ManaAbilitySortContext ctx, final SpellAbility ability1,
-            final SpellAbility ability2, final ManaCostShard shard) {
-        if (shard.isGeneric()) {
-            final int genericCmp = compareGenericShardAbilities(ctx, ability1, ability2);
-            if (genericCmp != 0) {
-                return genericCmp;
-            }
-        } else if (!shard.isGeneric() && shard != ManaCostShard.COLORLESS) {
-            final int coloredCmp = compareColoredShardAbilities(ctx, ability1, ability2, shard);
-            if (coloredCmp != 0) {
-                return coloredCmp;
-            }
-        }
-        if (shard.isGeneric()) {
-            final int tiebreak = compareGenericTiebreak(ctx, ability1, ability2);
-            if (tiebreak != 0) {
-                return tiebreak;
-            }
-        }
-        return ctx.cardPreOrder(ability1, ability2);
-    }
-
-    static int compareSameCard(final ManaAbilitySortContext ctx, final SpellAbility ability1,
-            final SpellAbility ability2, final ManaCostShard shard) {
-        final int unpaidForShard = ctx.cost.getUnpaidShards(shard);
-        if (unpaidForShard >= 2 || (shard.isGeneric() && ctx.unpaidGeneric >= 2)) {
-            final int combo1 = ManaFilterConsolidation.getComboManaAmount(ability1);
-            final int combo2 = ManaFilterConsolidation.getComboManaAmount(ability2);
-            if (combo1 >= 2 || combo2 >= 2) {
-                if (combo1 != combo2) {
-                    return Integer.compare(combo2, combo1);
-                }
-                final int colorlessCmp = compareColorlessPreference(ability1, ability2, false);
-                if (colorlessCmp != 0) {
-                    return colorlessCmp;
-                }
-            }
-        }
-        final boolean ab1HasManaCost = ManaFilterConsolidation.hasManaActivationCost(ability1);
-        final boolean ab2HasManaCost = ManaFilterConsolidation.hasManaActivationCost(ability2);
-        if (ab1HasManaCost != ab2HasManaCost) {
-            if (shard.isGeneric() && ctx.unpaidGeneric >= 2) {
-                final int anyFilterCmp = compareAnyManaFilterPreference(ctx, ability1, ability2, false);
-                if (anyFilterCmp != 0) {
-                    return anyFilterCmp;
-                }
-            }
-            return ab1HasManaCost ? 1 : -1;
-        }
-        final String shardMana = shard.toShortString();
-        final boolean payWithAb1 = ability1.getManaPart().mana(ability1).contains(shardMana);
-        final boolean payWithAb2 = ability2.getManaPart().mana(ability2).contains(shardMana);
-        if (payWithAb1 && !payWithAb2) {
-            return -1;
-        }
-        if (payWithAb2 && !payWithAb1) {
+    /** 0 = consolidating multi-pip/combo filter, 1 = other. Independent of the other item. */
+    static int consolidatingMultiOrComboRank(final ManaAbilitySortContext ctx, final SpellAbility ma) {
+        if (!ctx.consolidates(ma)) {
             return 1;
         }
-        return ability1.compareTo(ability2);
+        return (ManaFilterConsolidation.isMultiPipActivationFilter(ma)
+                || ManaFilterConsolidation.isComboConsolidatingFilter(ma)) ? 0 : 1;
     }
 
-    static int compareManaAbilities(final ManaAbilitySortContext ctx, final SpellAbility ability1,
-            final SpellAbility ability2, final ManaCostShard shard) {
-        final int preOrder = ctx.cardPreOrder(ability1, ability2);
-        if (preOrder != 0) {
-            return compareDifferentCards(ctx, ability1, ability2, shard);
+    /**
+     * Filter vs non-filter as a total order. When unpaid colored &gt;= 2 and generic is paid,
+     * consolidating any-mana sits ahead of non-filters, which sit ahead of other filters.
+     */
+    static int coloredFilterClass(final ManaAbilitySortContext ctx, final SpellAbility ma) {
+        final boolean filter = ManaFilterConsolidation.hasManaActivationCost(ma);
+        if (ctx.unpaidGeneric == 0 && ctx.unpaidColoredShards >= 2) {
+            if (ctx.consolidates(ma) && ManaFilterConsolidation.isAnyManaConsolidatingFilter(ma)) {
+                return 0;
+            }
+            return filter ? 2 : 1;
         }
-        return compareSameCard(ctx, ability1, ability2, shard);
+        return filter ? 1 : 0;
+    }
+
+    /**
+     * Direct vs any-multi vs overspend as independent classes. Pairwise "A is X and B is Y"
+     * returns leave some pairs equal and create cycles with later keys.
+     */
+    static int coloredProducerClass(final SpellAbility ma, final ManaCostShard shard, final boolean multiUnpaid) {
+        if (multiUnpaid) {
+            if (ManaPaymentExecution.isSinglePipDirectColoredProducer(ma, shard)) {
+                return 0;
+            }
+            if (ManaPaymentExecution.isDirectColoredMultiProducer(ma, shard)) {
+                return 1;
+            }
+            if (ManaPaymentExecution.isAnyMultiManaProducer(ma)) {
+                return 3;
+            }
+            return 2;
+        }
+        if (ManaPaymentExecution.isSinglePipDirectColoredProducer(ma, shard)) {
+            return 0;
+        }
+        if (ManaPaymentExecution.isDirectColoredMultiProducer(ma, shard)) {
+            return 2;
+        }
+        return 1;
+    }
+
+    static boolean producesShardMana(final SpellAbility ma, final ManaCostShard shard) {
+        if (ma == null || ma.getManaPart() == null) {
+            return false;
+        }
+        final String mana = ma.getManaPart().mana(ma);
+        return mana != null && mana.contains(shard.toShortString());
+    }
+
+    static int colorlessTiebreakClass(final SpellAbility ma, final boolean reserveColorless) {
+        final boolean colorless = ManaPaymentExecution.producesOnlyColorless(ma);
+        if (reserveColorless) {
+            return colorless ? 1 : 0;
+        }
+        return colorless ? 0 : 1;
+    }
+
+    /**
+     * Independent per-ability key. TimSort requires a total order; pairwise
+     * "if both have property P" tests and same-card vs different-card splits do not.
+     */
+    static int[] manaSortKey(final ManaAbilitySortContext ctx, final SpellAbility ma, final ManaCostShard shard) {
+        final int[] key = new int[24];
+        int i = 0;
+        if (shard.isGeneric()) {
+            final ManaSourceTraits t = ctx.traits(ma);
+            key[i++] = (ctx.unpaidGeneric == 1 && t.tightFor(1)) ? 0 : 1;
+            key[i++] = ctx.unpaidGeneric >= 2 ? genericMultiPipRank(ctx, ma) : 0;
+            key[i++] = ctx.unpaidGeneric >= 2 ? anyManaPreferenceClass(ctx, ma, true) : 0;
+            key[i++] = rankGenericManaSource(ma, effectiveGenericColorPreference(ctx));
+            key[i++] = anyManaFilterCmcKey(ma);
+            key[i++] = ctx.unpaidGeneric >= 2 && ManaPaymentExecution.doesNotUntapNormally(ma) ? 1 : 0;
+            key[i++] = ctx.unpaidGeneric >= 2 && ManaPaymentExecution.isMultiManaProducer(ma) ? 0 : 1;
+            if (ctx.unpaidGeneric == 1) {
+                key[i++] = t.producedAmount;
+            } else if (ctx.unpaidGeneric >= 2) {
+                key[i++] = -t.producedAmount;
+            } else {
+                key[i++] = 0;
+            }
+            final Integer score = ctx.manaCardMap.get(ma.getHostCard());
+            key[i++] = score == null ? Integer.MAX_VALUE : score;
+            key[i++] = colorlessTiebreakClass(ma, ctx.genericColorPref.reservesColorless());
+            for (int c = 0; c < 5; c++) {
+                if (ctx.colorsMostCommon != null && c < ctx.colorsMostCommon.size()) {
+                    final Set<Card> hosts = ctx.hostsByColor.get(ctx.colorsMostCommon.get(c));
+                    key[i++] = (hosts != null && hosts.contains(ma.getHostCard())) ? 1 : 0;
+                } else {
+                    key[i++] = 0;
+                }
+            }
+        } else if (shard != ManaCostShard.COLORLESS) {
+            key[i++] = ctx.unpaidColoredShards >= 2 ? consolidatingMultiOrComboRank(ctx, ma) : 0;
+            key[i++] = coloredFilterClass(ctx, ma);
+            final int unpaidForShard = ctx.cost.getUnpaidShards(shard);
+            if (unpaidForShard >= 2) {
+                key[i++] = coloredProducerClass(ma, shard, true);
+            } else if (unpaidForShard == 1) {
+                key[i++] = coloredProducerClass(ma, shard, false);
+            } else {
+                key[i++] = 0;
+            }
+            key[i++] = anyManaFilterCmcKey(ma);
+        }
+        final Card host = ma.getHostCard();
+        key[i++] = ctx.cardRank.getOrDefault(host, Integer.MAX_VALUE);
+        if (ctx.cost.getUnpaidShards(shard) >= 2 || (shard.isGeneric() && ctx.unpaidGeneric >= 2)) {
+            key[i++] = -ManaFilterConsolidation.getComboManaAmount(ma);
+        } else {
+            key[i++] = 0;
+        }
+        key[i++] = ManaFilterConsolidation.hasManaActivationCost(ma) ? 1 : 0;
+        key[i++] = producesShardMana(ma, shard) ? 0 : 1;
+        key[i++] = ma.calculateScoreForManaAbility();
+        key[i++] = host == null ? 0 : host.getId();
+        key[i++] = ma.getId();
+        return key;
+    }
+
+    static int compareSortKeys(final int[] a, final int[] b) {
+        final int n = Math.min(a.length, b.length);
+        for (int i = 0; i < n; i++) {
+            final int cmp = Integer.compare(a[i], b[i]);
+            if (cmp != 0) {
+                return cmp;
+            }
+        }
+        return Integer.compare(a.length, b.length);
     }
 
     static List<SpellAbility> applyAIManaPrefReorder(final List<SpellAbility> abilities,
@@ -697,7 +605,11 @@ final class ManaAbilitySort {
 
         for (final ManaCostShard shard : sourcesForShards.keySet()) {
             final List<SpellAbility> newAbilities = new ArrayList<>(sourcesForShards.get(shard));
-            newAbilities.sort((a1, a2) -> compareManaAbilities(ctx, a1, a2, shard));
+            final Map<SpellAbility, int[]> sortKeys = new IdentityHashMap<>();
+            for (final SpellAbility ma : newAbilities) {
+                sortKeys.put(ma, manaSortKey(ctx, ma, shard));
+            }
+            newAbilities.sort((a1, a2) -> compareSortKeys(sortKeys.get(a1), sortKeys.get(a2)));
             final List<SpellAbility> trimmed = trimFungibleManaCandidates(newAbilities, shard, cost, ai);
             sourcesForShards.replaceValues(shard, trimmed);
 
