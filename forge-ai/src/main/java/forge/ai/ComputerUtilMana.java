@@ -1481,6 +1481,7 @@ public class ComputerUtilMana {
 
             for (final SpellAbility ma : src.getManaAbilities()) {
                 ma.setActivatingPlayer(p);
+                resetVariableManaX(ma, p);
                 if (checkPlayable && !ma.canPlay()) {
                     continue;
                 }
@@ -1718,6 +1719,18 @@ public class ComputerUtilMana {
             }
         }
         return Math.max(fromAmount, fromPredicted);
+    }
+
+    /**
+     * Variable-X mana abilities (Calciform Pools' {@code Remove X storage counters}) read X for both the
+     * counters removed and the mana produced; each board scan starts from the maximum the host can pay so
+     * the ability is registered at full potential, unless the planner already chose X for this payment
+     * ({@link ManaPaymentExecution#chooseVariableManaX}).
+     */
+    private static void resetVariableManaX(final SpellAbility ma, final Player ai) {
+        if (ManaSourceTraits.of(ma).variableX) {
+            ManaPaymentExecution.syncVariableManaX(ma, ai);
+        }
     }
 
     private static boolean handHasManaAbility(final Player ai) {
@@ -1979,6 +1992,7 @@ public class ComputerUtilMana {
         for (final Card sourceCard : getAvailableManaSources(ai, checkPlayable, ctx)) {
             for (final SpellAbility m : getAIPlayableMana(sourceCard, ctx)) {
                 m.setActivatingPlayer(ai);
+                resetVariableManaX(m, ai);
                 // Per-ability canPlay: card may be included because a sibling ability is playable.
                 if (checkPlayable && !m.canPlay()) {
                     continue;
