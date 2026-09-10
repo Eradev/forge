@@ -78,6 +78,12 @@ final class ManaPaymentContext {
         /** {@link ManaAbilitySort#computeHandColorPreferences} keyed by the host of the spell being paid. */
         final Map<Card, List<Integer>> handColorPrefsByHost = new IdentityHashMap<>();
         Set<Card> reusableTapLandSet;
+        /**
+         * X chosen for a variable-X mana ability this payment ({@link ManaSourceTraits#variableX}); a
+         * planner decision, not a board memo, so it survives {@link #invalidateBoardMemos}. See
+         * {@link ManaPaymentExecution#chooseVariableManaX}.
+         */
+        final Map<SpellAbility, Integer> chosenVariableX = new IdentityHashMap<>();
         HandProbe handProbe;
         final CastabilityProbeScratch castabilityProbe = new CastabilityProbeScratch();
         private Boolean boardHasNetPositiveConsolidator;
