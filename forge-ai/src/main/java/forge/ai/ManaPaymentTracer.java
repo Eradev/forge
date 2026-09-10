@@ -7,7 +7,6 @@ import forge.game.cost.Cost;
 import forge.game.cost.CostPart;
 import forge.game.cost.CostSacrifice;
 import forge.game.player.Player;
-import forge.game.spellability.AbilityStatic;
 import forge.game.spellability.SpellAbility;
 import forge.game.zone.ZoneType;
 import forge.util.IHasForgeLog;
@@ -16,6 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * Debug tracing for AI mana payment ({@code -Dforge.debugManaPayment*}).
@@ -26,6 +26,37 @@ import java.util.Set;
  */
 final class ManaPaymentTracer implements IHasForgeLog {
     private ManaPaymentTracer() {
+    }
+
+    /**
+     * Verbose flag and trace mode are JVM startup switches; cache them so the hot payment loop does not
+     * hit the synchronized system-properties table on every trace line. {@link #refreshFlags()} re-reads.
+     */
+    private static volatile Boolean verboseFlag;
+    private static volatile TraceMode traceMode;
+
+    /** Re-read {@code -Dforge.debugManaPayment*} switches (tests / runtime toggles). */
+    static void refreshFlags() {
+        verboseFlag = null;
+        traceMode = null;
+    }
+
+    private static boolean verboseFlag() {
+        Boolean v = verboseFlag;
+        if (v == null) {
+            v = Boolean.getBoolean("forge.debugManaPayment");
+            verboseFlag = v;
+        }
+        return v;
+    }
+
+    private static TraceMode traceMode() {
+        TraceMode m = traceMode;
+        if (m == null) {
+            m = TraceMode.current();
+            traceMode = m;
+        }
+        return m;
     }
 
     private enum TraceMode {
@@ -196,10 +227,10 @@ final class ManaPaymentTracer implements IHasForgeLog {
     }
 
     static boolean verboseEnabled(final boolean test) {
-        if (!Boolean.getBoolean("forge.debugManaPayment")) {
+        if (!verboseFlag()) {
             return false;
         }
-        switch (TraceMode.current()) {
+        switch (traceMode()) {
             case PROD:
                 return !test;
             case ALL:
@@ -208,6 +239,16 @@ final class ManaPaymentTracer implements IHasForgeLog {
             default:
                 return test;
         }
+    }
+
+    /** True when a main-trace line for this context would actually be emitted. */
+    static boolean mainEnabled(final boolean test, final ManaPaymentContext ctx) {
+        return (ctx == null || ctx.shouldLogMain()) && verboseEnabled(test);
+    }
+
+    /** True when a tap line should be built: either verbose trace or plan recording is active. */
+    static boolean tapTraceEnabled(final boolean test, final ManaPaymentContext ctx) {
+        return mainEnabled(test, ctx) || (ctx != null && ctx.planSteps != null);
     }
 
     static void log(final boolean test, final String msg) {
@@ -222,13 +263,28 @@ final class ManaPaymentTracer implements IHasForgeLog {
         }
     }
 
+    /** Lazy variant: the message is only built when the line will be emitted. */
+    static void logMain(final boolean test, final Supplier<String> msg, final ManaPaymentContext ctx) {
+        if (mainEnabled(test, ctx)) {
+            log(test, msg.get());
+        }
+    }
+
     static void logResult(final boolean test, final boolean success, final String msg, final ManaPaymentContext ctx) {
         logMain(test, success ? msg : "!! " + msg, ctx);
     }
 
+    static void logResult(final boolean test, final boolean success, final Supplier<String> msg,
+            final ManaPaymentContext ctx) {
+        if (mainEnabled(test, ctx)) {
+            final String m = msg.get();
+            log(test, success ? m : "!! " + m);
+        }
+    }
+
     static void logTap(final boolean test, final SpellAbility saPayment, final SpellAbility sa,
             final String paidShards, final String manaProduced, final ManaPaymentContext ctx) {
-        if (saPayment == null) {
+        if (saPayment == null || !tapTraceEnabled(test, ctx)) {
             return;
         }
         final String msg = "  " + formatSourceAction(saPayment, saPayment.getActivatingPlayer() != null
@@ -248,7 +304,7 @@ final class ManaPaymentTracer implements IHasForgeLog {
      */
     static void logNestedTap(final boolean test, final SpellAbility chosen, final String manaProduced,
             final Card filterHost, final SpellAbility paidFor, final ManaPaymentContext ctx) {
-        if (chosen == null) {
+        if (chosen == null || !tapTraceEnabled(test, ctx)) {
             return;
         }
         final String produced = manaProduced != null ? manaProduced : "";
@@ -296,34 +352,15 @@ final class ManaPaymentTracer implements IHasForgeLog {
         int step = 1;
         for (final String line : rawSteps) {
             if (line != null) {
-                aiLog.info("  {}. {}", step++, formatStep(line));
+                aiLog.info("  {}. {}", step++, line.trim());
             }
         }
     }
 
-    private static boolean planEnabled() {
+    /** Read dynamically: tests toggle this property at runtime. Only reached when a plan is being recorded. */
+    /** Read live (not cached): tests toggle the property at runtime. */
+    static boolean planEnabled() {
         return Boolean.getBoolean("forge.debugManaPayment.plan");
-    }
-
-    /** True when paying mana to activate a non-spell ability (equip, crew, companion ST$, etc.). */
-    private static boolean isAbilityManaPayment(final SpellAbility sa) {
-        if (sa == null || sa.isSpell() || sa.isManaAbility()) {
-            return false;
-        }
-        final Cost payCosts = sa.getPayCosts();
-        if (payCosts == null || !payCosts.hasManaCost()) {
-            return false;
-        }
-        // ST$ scripted abilities (e.g. Companion put-into-hand) are AbilityStatic, not AbilityActivated.
-        return sa.isActivatedAbility() || sa.isLandAbility() || sa instanceof AbilityStatic;
-    }
-
-    private static boolean isBattlefieldAbilityPayment(final SpellAbility sa) {
-        return isAbilityManaPayment(sa);
-    }
-
-    private static boolean isCommandZoneAbilityPayment(final SpellAbility sa) {
-        return isAbilityManaPayment(sa);
     }
 
     private static String battlefieldAbilityPaymentKind(final SpellAbility sa) {
@@ -351,12 +388,5 @@ final class ManaPaymentTracer implements IHasForgeLog {
             return "companion";
         }
         return "command";
-    }
-
-    private static String formatStep(final String raw) {
-        if (raw == null) {
-            return "";
-        }
-        return raw.trim();
     }
 }
