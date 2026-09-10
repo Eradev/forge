@@ -13,6 +13,7 @@ import forge.card.mana.ManaCostParser;
 import forge.game.Game;
 import forge.game.card.Card;
 import forge.game.card.CardCollection;
+import forge.game.card.CounterEnumType;
 import forge.game.mana.ManaCostBeingPaid;
 import forge.game.phase.PhaseType;
 import forge.game.player.Player;
@@ -444,6 +445,108 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals("Plains cannot help and should stay untapped", 0, countTapped(game, "Plains"));
         AssertJUnit.assertEquals("Heart of Ramos should be sacrificed", 1, countInZone(game, ZoneType.Graveyard, "Heart of Ramos"));
         AssertJUnit.assertEquals("No mana should float", 0, p.getManaPool().totalMana());
+    }
+
+    // --- Variable-X storage lands (Calciform Pools) ---
+
+    private Card addCalciformPools(Player p, int storageCounters) {
+        Card pools = addCard("Calciform Pools", p);
+        if (storageCounters > 0) {
+            pools.addCounterInternal(CounterEnumType.STORAGE, storageCounters, p, false, null, null);
+        }
+        return pools;
+    }
+
+    /** Pools alone pays {W}: tap itself for {C} to pay its own {1}, remove one counter (not both) for W. */
+    @Test
+    public void calciformPoolsPaysOwnActivationAndRemovesOnlyNeededCounters() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card pools = addCalciformPools(p, 2);
+        Card spell = addCardToZone("Shock", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("W"), sa));
+
+        CardCollection sources = predictedManaSources(game, p, cost("W"), sa);
+        AssertJUnit.assertTrue(sources.anyMatch(c -> "Calciform Pools".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("W"), sa));
+        AssertJUnit.assertTrue("Pools should be tapped for its own {1}", pools.isTapped());
+        AssertJUnit.assertEquals("Only one storage counter should be spent", 1, pools.getCounters(CounterEnumType.STORAGE));
+        AssertJUnit.assertEquals("No mana should float", 0, p.getManaPool().totalMana());
+    }
+
+    /** {U}{U}{U} with Pools (3 counters) + Island: Island pays one, Pools spends two counters, one is kept. */
+    @Test
+    public void calciformPoolsCombinesWithIslandAndKeepsSpareCounter() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card pools = addCalciformPools(p, 3);
+        addCard("Island", p);
+        Card spell = addCardToZone("Shock", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("U U U"), sa));
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("U U U"), sa));
+        AssertJUnit.assertEquals("Island should be tapped", 1, countTapped(game, "Island"));
+        AssertJUnit.assertTrue(pools.isTapped());
+        AssertJUnit.assertEquals("Two storage counters should be spent", 1, pools.getCounters(CounterEnumType.STORAGE));
+        AssertJUnit.assertEquals("No mana should float", 0, p.getManaPool().totalMana());
+    }
+
+    /** Storage counters are a one-shot resource: basics pay {W}{U} and Pools is left alone. */
+    @Test
+    public void calciformPoolsNotUsedWhenBasicsCover() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card pools = addCalciformPools(p, 2);
+        addCard("Plains", p);
+        addCard("Island", p);
+        Card spell = addCardToZone("Shock", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        CardCollection sources = predictedManaSources(game, p, cost("W U"), sa);
+        AssertJUnit.assertFalse("Pools should not be in the plan",
+                sources.anyMatch(c -> "Calciform Pools".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("W U"), sa));
+        AssertJUnit.assertFalse(pools.isTapped());
+        AssertJUnit.assertEquals(2, pools.getCounters(CounterEnumType.STORAGE));
+    }
+
+    /** Without counters the storage ability is worthless: {W}{U} is unpayable, but {T}: {C} still works. */
+    @Test
+    public void calciformPoolsWithoutCountersOnlyTapsForColorless() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card pools = addCalciformPools(p, 0);
+        addCard("Plains", p);
+        Card spell = addCardToZone("Shock", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertFalse(canAutoPay(game, p, cost("W U"), sa));
+
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("1 W"), sa));
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1 W"), sa));
+        AssertJUnit.assertTrue(pools.isTapped());
+        AssertJUnit.assertEquals(1, countTapped(game, "Plains"));
     }
 
     @Test
