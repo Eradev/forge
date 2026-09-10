@@ -289,6 +289,83 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals("Cascade Bluffs should be tapped", 1, countTapped(game, "Cascade Bluffs"));
     }
 
+    /**
+     * Two same-kind consolidators chain: Study Hall {C} funds Selesnya Signet, whose surplus {G} funds
+     * Sungrass Prairie. Karakas (AIManaReserve) must stay untapped rather than paying the last generic pip.
+     */
+    @Test
+    public void signetSurplusFundsSungrassAndKeepsKarakasUntapped() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Study Hall", p);
+        addCard("Sungrass Prairie", p);
+        addCard("Karakas", p);
+        addCard("Selesnya Signet", p);
+        Card spell = addCardToZone("Abzan Falconer", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, new ManaCostBeingPaid(spell.getManaCost()), sa));
+
+        CardCollection sources = predictedManaSources(game, p, new ManaCostBeingPaid(spell.getManaCost()), sa);
+        AssertJUnit.assertTrue("Study Hall should pay the Signet's {1}",
+                sources.anyMatch(c -> "Study Hall".equals(c.getName())));
+        AssertJUnit.assertTrue("Selesnya Signet should be used",
+                sources.anyMatch(c -> "Selesnya Signet".equals(c.getName())));
+        AssertJUnit.assertTrue("Sungrass Prairie should be used",
+                sources.anyMatch(c -> "Sungrass Prairie".equals(c.getName())));
+        AssertJUnit.assertFalse("Karakas should stay untapped",
+                sources.anyMatch(c -> "Karakas".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, new ManaCostBeingPaid(spell.getManaCost()), sa));
+        AssertJUnit.assertEquals("Study Hall should be tapped", 1, countTapped(game, "Study Hall"));
+        AssertJUnit.assertEquals("Signet should be tapped", 1, countTapped(game, "Selesnya Signet"));
+        AssertJUnit.assertEquals("Sungrass Prairie should be tapped", 1, countTapped(game, "Sungrass Prairie"));
+        AssertJUnit.assertEquals("Karakas should not be tapped", 0, countTapped(game, "Karakas"));
+    }
+
+    /**
+     * The chained Signet's surplus must spend the color the spell can't use: for {1}{G}{G}, Selesnya
+     * Signet's {W} (not its {G}) funds Sungrass Prairie, leaving G + G W to pay the spell without Karakas.
+     * Production must make the same choice from the real mana pool, or Auto-pay fails after the preview
+     * promised the chain.
+     */
+    @Test
+    public void chainedSignetSpendsUnneededColorOnSecondActivation() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Study Hall", p);
+        addCard("Sungrass Prairie", p);
+        addCard("Karakas", p);
+        addCard("Selesnya Signet", p);
+        Card spell = addCardToZone("Yavimaya Elder", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, new ManaCostBeingPaid(spell.getManaCost()), sa));
+
+        CardCollection sources = predictedManaSources(game, p, new ManaCostBeingPaid(spell.getManaCost()), sa);
+        AssertJUnit.assertEquals("Exactly three sources should be tapped", 3, sources.size());
+        AssertJUnit.assertTrue("Selesnya Signet should be used",
+                sources.anyMatch(c -> "Selesnya Signet".equals(c.getName())));
+        AssertJUnit.assertTrue("Sungrass Prairie should be used",
+                sources.anyMatch(c -> "Sungrass Prairie".equals(c.getName())));
+        AssertJUnit.assertFalse("Karakas should stay untapped",
+                sources.anyMatch(c -> "Karakas".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, new ManaCostBeingPaid(spell.getManaCost()), sa));
+        AssertJUnit.assertEquals("Study Hall should be tapped", 1, countTapped(game, "Study Hall"));
+        AssertJUnit.assertEquals("Signet should be tapped", 1, countTapped(game, "Selesnya Signet"));
+        AssertJUnit.assertEquals("Sungrass Prairie should be tapped", 1, countTapped(game, "Sungrass Prairie"));
+        AssertJUnit.assertEquals("Karakas should not be tapped", 0, countTapped(game, "Karakas"));
+    }
+
     @Test
     public void paymentPlanPreviewIncludesPetalSacrificedForSignetActivation() {
         Game game = initAndCreateGame();

@@ -1808,7 +1808,7 @@ final class ManaPaymentExecution {
         final List<Mana> probePoolRemovals = new ArrayList<>();
         final List<Mana> probeDeposited = new ArrayList<>();
         try (ReservationSnapshot snap = ReservationSnapshot.take(ai)) {
-            if (!payNestedActivationCost(filterAb, sa, ai, ArrayListMultimap.create(), probePoolRemovals, probeDeposited,
+            if (!payNestedActivationCost(filterAb, sa, null, ai, ArrayListMultimap.create(), probePoolRemovals, probeDeposited,
                     true, false, taps, probeCtx)) {
                 return null;
             }
@@ -2236,11 +2236,16 @@ final class ManaPaymentExecution {
      * {@code test == true} simulates during planning (surplus goes to {@code testDepositedSurplus}, taps
      * are reported via {@code outTapped}); {@code test == false} physically taps the same sources the
      * planner chose so Auto-pay matches simulation / feasibility checks.
+     * <p>
+     * {@code outerCost} (nullable) is the spell cost this activation ultimately serves. When floating or
+     * deposited mana pays the activation, mana that cannot pay one of its unpaid colored pips is spent
+     * first (Signet {@code {G}{W}} funding Sungrass Prairie for {@code {1}{G}{G}} spends the {@code W}).
      *
      * @return true if the activation cost was fully paid from free sources.
      */
     static boolean payNestedActivationCost(final SpellAbility filterAb,
-            final SpellAbility sa, final Player ai, final ListMultimap<ManaCostShard, SpellAbility> sourcesForShards,
+            final SpellAbility sa, final ManaCostBeingPaid outerCost, final Player ai,
+            final ListMultimap<ManaCostShard, SpellAbility> sourcesForShards,
             final List<Mana> manaSpentToPay, final List<Mana> testDepositedSurplus, final boolean test,
             final boolean effect, final CardCollection outTapped, final ManaPaymentContext ctx) {
         if (filterAb.getPayCosts() == null) {
@@ -2268,14 +2273,14 @@ final class ManaPaymentExecution {
 
         // First spend any floating mana in the pool towards the activation cost.
         final ManaPool pool = ai.getManaPool();
-        pool.payManaCostFromPool(nestedCost, filterAb, test, manaSpentToPay);
+        payNestedCostFromPool(filterAb, nestedCost, pool, outerCost, test, manaSpentToPay);
         if (test) {
-            spendTestDepositedManaTowardCost(filterAb, nestedCost, pool, testDepositedSurplus, manaSpentToPay);
+            spendTestDepositedManaTowardNestedCost(filterAb, nestedCost, pool, testDepositedSurplus, manaSpentToPay, outerCost);
         }
 
         while (!nestedCost.isPaid()) {
             if (test) {
-                spendTestDepositedManaTowardCost(filterAb, nestedCost, pool, testDepositedSurplus, manaSpentToPay);
+                spendTestDepositedManaTowardNestedCost(filterAb, nestedCost, pool, testDepositedSurplus, manaSpentToPay, outerCost);
                 if (nestedCost.isPaid()) {
                     break;
                 }
@@ -2316,9 +2321,9 @@ final class ManaPaymentExecution {
                 freeCandidates.removeIf(ManaFilterConsolidation::isDisposableManaAbility);
             }
             if (freeCandidates.isEmpty()) {
-                pool.payManaCostFromPool(nestedCost, filterAb, test, manaSpentToPay);
+                payNestedCostFromPool(filterAb, nestedCost, pool, outerCost, test, manaSpentToPay);
                 if (test) {
-                    spendTestDepositedManaTowardCost(filterAb, nestedCost, pool, testDepositedSurplus, manaSpentToPay);
+                    spendTestDepositedManaTowardNestedCost(filterAb, nestedCost, pool, testDepositedSurplus, manaSpentToPay, outerCost);
                 }
                 if (nestedCost.isPaid()) {
                     continue;
@@ -2445,8 +2450,12 @@ final class ManaPaymentExecution {
     }
 
     /**
-     * Bank mana through a Signet (or similar) then a combo land (Cascade Bluffs), then pay the spell
-     * from the pool. Covers Signet {@code {B}{R}} -> Bluffs {@code {R}{R}} -> {@code {1}{R}{R}}.
+     * Bank mana through a Signet (or similar) then a second consolidator, then pay the spell from the
+     * pool. The second stage is either a combo land (Signet {@code {B}{R}} -> Cascade Bluffs
+     * {@code {R}{R}} -> {@code {1}{R}{R}}) or another net-positive filter on a different host
+     * (Selesnya Signet {@code {G}{W}} -> {@code {G}} funds Sungrass Prairie -> {@code {G}{W}} ->
+     * {@code {2}{W}}), so the first stage's surplus funds the second activation instead of being
+     * spent on a generic pip while a free land is tapped for the remainder.
      */
     static boolean tryPayViaManaBankingChain(final ManaCostBeingPaid cost, final SpellAbility sa,
             final Player ai, final ListMultimap<ManaCostShard, SpellAbility> sourcesForShards,
@@ -2457,7 +2466,9 @@ final class ManaPaymentExecution {
                 || (ctx != null && !ctx.caches.boardHasBankingPair(ai))) {
             return false;
         }
-        final List<SpellAbility> combos = new ArrayList<>();
+        // Second-stage candidates: combo lands first (they need a colored input a signet supplies),
+        // then other net-positive filters (a signet's surplus funds a Signet-like land's {1}).
+        final List<SpellAbility> seconds = new ArrayList<>();
         final List<SpellAbility> signets = new ArrayList<>();
         for (final Card c : ai.getCardsIn(ZoneType.Battlefield)) {
             for (final SpellAbility ma : c.getManaAbilities()) {
@@ -2469,17 +2480,21 @@ final class ManaPaymentExecution {
                     continue;
                 }
                 if (ManaFilterConsolidation.isComboConsolidatingFilter(ma)) {
-                    combos.add(ma);
+                    seconds.add(ma);
                 } else if (isNetPositiveConsolidator(ma)) {
                     signets.add(ma);
                 }
             }
         }
+        seconds.addAll(signets);
         SpellAbility combo = null;
         SpellAbility signet = null;
         outer:
-        for (final SpellAbility ma : combos) {
+        for (final SpellAbility ma : seconds) {
             for (final SpellAbility signetMa : signets) {
+                if (signetMa.getHostCard() == ma.getHostCard()) {
+                    continue;
+                }
                 if (canPayViaSignetThenComboBanking(cost, sa, ai, signetMa, ma, testDepositedSurplus, ctx)) {
                     combo = ma;
                     signet = signetMa;
@@ -2582,7 +2597,7 @@ final class ManaPaymentExecution {
         };
         if (filterAb.getPayCosts() != null && filterAb.getPayCosts().hasManaCost()) {
             final CardCollection nestedTaps = test && planOut != null ? new CardCollection() : null;
-            if (!payNestedActivationCost(filterAb, sa, ai,
+            if (!payNestedActivationCost(filterAb, sa, spellCost, ai,
                     sourcesForShards == null ? ArrayListMultimap.create() : sourcesForShards,
                     manaSpentToPay, test ? testDepositedSurplus : null, test, effect, nestedTaps, ctx)) {
                 rollback.run();
@@ -2613,7 +2628,7 @@ final class ManaPaymentExecution {
             final Player ai, final ManaCostBeingPaid spellCost, final List<Mana> surplus,
             final ManaPaymentContext ctx) {
         if (filterAb.getPayCosts() != null && filterAb.getPayCosts().hasManaCost()) {
-            if (!payNestedActivationCost(filterAb, sa, ai, ArrayListMultimap.create(), null, surplus, true, false,
+            if (!payNestedActivationCost(filterAb, sa, spellCost, ai, ArrayListMultimap.create(), null, surplus, true, false,
                     null, ctx == null ? ManaPaymentContext.outer() : ctx.detachedProbe())) {
                 return false;
             }
@@ -2753,7 +2768,7 @@ final class ManaPaymentExecution {
         final boolean traceTaps = ManaPaymentTracer.tapTraceEnabled(test, ctx);
         if (test) {
             if (saPayment.getPayCosts() != null && saPayment.getPayCosts().hasManaCost()) {
-                if (!payNestedActivationCost(saPayment, sa, ai, sourcesForShards, manaSpentToPay,
+                if (!payNestedActivationCost(saPayment, sa, cost, ai, sourcesForShards, manaSpentToPay,
                         testDepositedSurplus, true, false, outTapped, ctx)) {
                     return false;
                 }
@@ -2779,7 +2794,7 @@ final class ManaPaymentExecution {
             }
             depositNestedManaSurplus(unused, saPayment.getHostCard(), ai, testDepositedSurplus);
         } else if (saPayment.getPayCosts() != null && saPayment.getPayCosts().hasManaCost()) {
-            if (!payNestedActivationCost(saPayment, sa, ai, sourcesForShards, manaSpentToPay, null, false, effect,
+            if (!payNestedActivationCost(saPayment, sa, cost, ai, sourcesForShards, manaSpentToPay, null, false, effect,
                     null, ctx)) {
                 return false;
             }
@@ -2882,6 +2897,54 @@ final class ManaPaymentExecution {
                 break;
             }
         }
+    }
+
+    /**
+     * Spend deposited surplus on a filter's activation cost. Mana the outer spell can't use for an unpaid
+     * colored pip is spent first so the useful colors remain for the spell itself.
+     */
+    static void spendTestDepositedManaTowardNestedCost(final SpellAbility filterAb,
+            final ManaCostBeingPaid nestedCost, final ManaPool pool, final List<Mana> testDepositedSurplus,
+            final List<Mana> manaSpentToPay, final ManaCostBeingPaid outerCost) {
+        if (testDepositedSurplus == null || testDepositedSurplus.isEmpty()) {
+            return;
+        }
+        if (outerCost != null && testDepositedSurplus.size() > 1) {
+            testDepositedSurplus.sort(Comparator.comparingInt(
+                    m -> colorCanPayUnpaidColoredShard(outerCost, pool, m.getColor()) ? 1 : 0));
+        }
+        spendTestDepositedManaTowardCost(filterAb, nestedCost, pool, testDepositedSurplus, manaSpentToPay);
+    }
+
+    /**
+     * Pay a filter's activation cost from floating mana. In production, colors the outer spell can't use
+     * for an unpaid colored pip are spent first (the AI's default pool choice is arbitrary); the generic
+     * {@link ManaPool#payManaCostFromPool} then covers anything left.
+     */
+    static void payNestedCostFromPool(final SpellAbility filterAb, final ManaCostBeingPaid nestedCost,
+            final ManaPool pool, final ManaCostBeingPaid outerCost, final boolean test,
+            final List<Mana> manaSpentToPay) {
+        if (pool.isEmpty() || nestedCost.isPaid()) {
+            return;
+        }
+        if (!test && outerCost != null) {
+            final List<Byte> colors = new ArrayList<>();
+            for (final Mana m : pool) {
+                if (!colors.contains(m.getColor())) {
+                    colors.add(m.getColor());
+                }
+            }
+            colors.sort(Comparator.comparingInt(c -> colorCanPayUnpaidColoredShard(outerCost, pool, c) ? 1 : 0));
+            for (final Byte color : colors) {
+                while (!nestedCost.isPaid() && pool.tryPayCostWithColor(color, filterAb, nestedCost, manaSpentToPay)) {
+                    // keep spending this color while it still pays something
+                }
+            }
+            if (nestedCost.isPaid()) {
+                return;
+            }
+        }
+        pool.payManaCostFromPool(nestedCost, filterAb, test, manaSpentToPay);
     }
 
     static boolean hasUnpaidColoredShards(final ManaCostBeingPaid cost) {
