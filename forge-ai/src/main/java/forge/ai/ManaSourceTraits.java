@@ -49,6 +49,13 @@ final class ManaSourceTraits {
      * ({@link #leavesSiblingUsable}); mana parts are excluded since other sources pay them.
      */
     final Set<String> exclusiveCostKeys;
+    /**
+     * {@code X} is chosen by the activator through a non-mana cost part ({@code Remove X storage counters}
+     * on Calciform Pools) and drives the amount produced ({@code SVar:X:Count$xPaid}). The planner must set
+     * {@link SpellAbility#setXManaCostPaid} before predicting or producing mana; see
+     * {@link ManaPaymentExecution#maxVariableManaX} / {@link ManaPaymentExecution#chooseVariableManaX}.
+     */
+    final boolean variableX;
     final boolean selfSacCreature;
     final int producedAmount;
     final int comboAmount;
@@ -85,6 +92,7 @@ final class ManaSourceTraits {
         sacrificesOther = false;
         hostLeavesBattlefield = false;
         exclusiveCostKeys = Collections.emptySet();
+        variableX = false;
         selfSacCreature = false;
         producedAmount = 0;
         comboAmount = 0;
@@ -170,9 +178,19 @@ final class ManaSourceTraits {
         hostLeavesBattlefield = leaves;
         exclusiveCostKeys = keys.isEmpty() ? Collections.emptySet() : keys;
 
+        variableX = isManaAbility && payCosts != null && payCosts.hasXInAnyCostPart()
+                && (payCosts.getCostMana() == null || payCosts.getCostMana().getAmountOfX() == 0)
+                && "Count$xPaid".equals(ma.getSVar("X"));
+        if (variableX && ma.getActivatingPlayer() != null) {
+            // Amounts below read X: the planner's choice for this payment if it made one, else everything
+            // the host can pay for (all storage counters) so the ability registers its full potential.
+            ManaPaymentExecution.syncVariableManaX(ma, ma.getActivatingPlayer());
+        }
+
         boolean disp = false;
         if (isManaAbility) {
-            if (anySac) {
+            if (anySac || variableX) {
+                // Sacrifice or spend stored counters: a one-shot resource, used only when needed.
                 disp = true;
             } else if (!ma.isUndoable()) {
                 disp = !(hasTapCost && !hasManaActivationCost);
@@ -200,7 +218,9 @@ final class ManaSourceTraits {
         multiShardFilter = hasManaActivationCost && manaString != null && manaTokens >= 2;
         variableAmountFilter = hasManaActivationCost && manaString != null && manaTokens < 2 && producedAmount >= 2;
         multiPipFilter = multiShardFilter || variableAmountFilter;
-        comboFilter = multiManaCombo && hasManaActivationCost;
+        // One-shot consolidators (Calciform Pools' storage counters) are never chained or consolidated
+        // proactively; they stay ordinary fallback sources, sorted behind reusable producers.
+        comboFilter = multiManaCombo && hasManaActivationCost && !disposable;
         anyManaFilter = hasManaActivationCost && mp != null && anyMana && !multiShardFilter && !comboFilter;
 
         requiresTappingOtherCreature = isManaAbility && !disposable && tapsCreature;
@@ -215,7 +235,7 @@ final class ManaSourceTraits {
                 && producedAmount >= 2;
         anyMultiManaProducer = multiManaProducer && anyMana;
         multiManaDisposable = disposable && !sacrificesOther && producedAmount >= 2;
-        consolidatingCandidate = multiPipFilter || multiManaCombo || anyMultiManaProducer;
+        consolidatingCandidate = (multiPipFilter || multiManaCombo || anyMultiManaProducer) && !disposable;
         netPositiveConsolidator = consolidatingCandidate && hasManaActivationCost && producedAmount > activationCMC;
         netNegativeAnyManaFilterLoss = anyManaFilter && !netPositiveConsolidator
                 ? Math.max(0, activationCMC - producedAmount) : 0;
