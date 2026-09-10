@@ -1641,18 +1641,68 @@ public class ComputerUtilMana {
     static int estimateMaxManaAvailable(final Player ai, final boolean checkPlayable,
             final ManaPaymentContext ctx) {
         int available = ai.getManaPool().totalMana();
-        final Map<Card, Integer> maxByHost = new HashMap<>();
+        final Map<Card, List<SpellAbility>> byHost = new HashMap<>();
         for (final SpellAbility ma : getOrBuildUniqueManaAbilities(ai, checkPlayable, ctx)) {
             final Card host = ma.getHostCard();
             if (host == null) {
                 continue;
             }
-            maxByHost.merge(host, optimisticManaFromAbility(ma, ai), Math::max);
+            byHost.computeIfAbsent(host, k -> new ArrayList<>()).add(ma);
         }
-        for (final int produced : maxByHost.values()) {
-            available += produced;
+        for (final List<SpellAbility> abilities : byHost.values()) {
+            available += optimisticManaFromHost(abilities, ai);
         }
         return available;
+    }
+
+    /**
+     * Optimistic mana from one host: the best total over subsets of its abilities that can all be
+     * activated in some order (Heart of Ramos: {@code {T}} R + {@code Sacrifice} R = 2). A subset is usable
+     * when its costs consume disjoint exclusive resources and at most one removes the host (used last).
+     * Hosts with many abilities fall back to the plain sum, which is still a safe upper bound for a gate.
+     */
+    private static int optimisticManaFromHost(final List<SpellAbility> abilities, final Player ai) {
+        final int n = abilities.size();
+        final int[] amounts = new int[n];
+        int sum = 0;
+        for (int i = 0; i < n; i++) {
+            amounts[i] = optimisticManaFromAbility(abilities.get(i), ai);
+            sum += amounts[i];
+        }
+        if (n == 1 || n > 6) {
+            return sum;
+        }
+        final ManaSourceTraits[] traits = new ManaSourceTraits[n];
+        for (int i = 0; i < n; i++) {
+            traits[i] = ManaSourceTraits.of(abilities.get(i));
+        }
+        int best = 0;
+        for (int mask = 1; mask < (1 << n); mask++) {
+            int total = 0;
+            int leaving = 0;
+            boolean ok = true;
+            for (int i = 0; i < n && ok; i++) {
+                if ((mask & (1 << i)) == 0) {
+                    continue;
+                }
+                if (traits[i].hostLeavesBattlefield && ++leaving > 1) {
+                    ok = false;
+                    break;
+                }
+                for (int j = i + 1; j < n; j++) {
+                    if ((mask & (1 << j)) != 0
+                            && !Collections.disjoint(traits[i].exclusiveCostKeys, traits[j].exclusiveCostKeys)) {
+                        ok = false;
+                        break;
+                    }
+                }
+                total += amounts[i];
+            }
+            if (ok) {
+                best = Math.max(best, total);
+            }
+        }
+        return best;
     }
 
     /** Max of declared generation and predicted tap output (includes TapsForMana triggers). */

@@ -366,6 +366,86 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals("Karakas should not be tapped", 0, countTapped(game, "Karakas"));
     }
 
+    // --- Tap-then-sacrifice on one host (Heart of Ramos) ---
+
+    private int countInZone(Game game, ZoneType zone, String name) {
+        int i = 0;
+        for (Card c : game.getCardsIn(zone)) {
+            if (c.getName().equals(name)) {
+                i++;
+            }
+        }
+        return i;
+    }
+
+    /** Heart of Ramos ({T}: R / Sacrifice: R) alone pays {R}{R}: tap for the first, sacrifice for the second. */
+    @Test
+    public void heartOfRamosTapsThenSacrificesForDoubleRed() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Heart of Ramos", p);
+        Card spell = addCardToZone("Shock", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("R R"), sa));
+
+        CardCollection sources = predictedManaSources(game, p, cost("R R"), sa);
+        AssertJUnit.assertEquals("Heart of Ramos is the only source", 1, sources.size());
+        AssertJUnit.assertEquals("Heart of Ramos", sources.get(0).getName());
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("R R"), sa));
+        AssertJUnit.assertEquals("Heart of Ramos should be sacrificed", 1, countInZone(game, ZoneType.Graveyard, "Heart of Ramos"));
+        AssertJUnit.assertEquals("No mana should float", 0, p.getManaPool().totalMana());
+    }
+
+    /** With a Mountain available, {R}{R} taps both and never sacrifices the Heart. */
+    @Test
+    public void heartOfRamosNotSacrificedWhenMountainCoversSecondRed() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Heart of Ramos", p);
+        addCard("Mountain", p);
+        Card spell = addCardToZone("Shock", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("R R"), sa));
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("R R"), sa));
+        AssertJUnit.assertEquals("Mountain should be tapped", 1, countTapped(game, "Mountain"));
+        AssertJUnit.assertEquals("Heart of Ramos should be tapped", 1, countTapped(game, "Heart of Ramos"));
+        AssertJUnit.assertEquals("Heart of Ramos should not be sacrificed", 0, countInZone(game, ZoneType.Graveyard, "Heart of Ramos"));
+    }
+
+    /** {R}{R}{R} with Heart + Mountain: tap both, then sacrifice the Heart for the third pip. */
+    @Test
+    public void heartOfRamosTapsAndSacrificesForTripleRedWithMountain() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Heart of Ramos", p);
+        addCard("Mountain", p);
+        addCard("Plains", p);
+        Card spell = addCardToZone("Shock", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("R R R"), sa));
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("R R R"), sa));
+        AssertJUnit.assertEquals("Mountain should be tapped", 1, countTapped(game, "Mountain"));
+        AssertJUnit.assertEquals("Plains cannot help and should stay untapped", 0, countTapped(game, "Plains"));
+        AssertJUnit.assertEquals("Heart of Ramos should be sacrificed", 1, countInZone(game, ZoneType.Graveyard, "Heart of Ramos"));
+        AssertJUnit.assertEquals("No mana should float", 0, p.getManaPool().totalMana());
+    }
+
     @Test
     public void paymentPlanPreviewIncludesPetalSacrificedForSignetActivation() {
         Game game = initAndCreateGame();
