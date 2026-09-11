@@ -231,8 +231,11 @@ final class ManaSourceTraits {
         producesColoredWithoutFilterCost = !hasManaActivationCost && !disposable && manaString != null
                 && !manaString.isEmpty() && !"C".equals(manaString.trim());
 
-        multiManaProducer = !hasManaActivationCost && !disposable && !multiPipFilter && !multiManaCombo
-                && producedAmount >= 2;
+        // Free multi-mana combo (Firemind Vessel) counts as a multi producer so
+        // generic multi-pip payment prefers it over a same-host {C} ability or a second land. Combo filters
+        // with a mana activation cost stay out (hasManaActivationCost) and use the consolidator path instead.
+        multiManaProducer = !hasManaActivationCost && !disposable && !multiPipFilter
+                && (multiManaCombo ? comboAmount >= 2 : producedAmount >= 2);
         anyMultiManaProducer = multiManaProducer && anyMana;
         multiManaDisposable = disposable && !sacrificesOther && producedAmount >= 2;
         consolidatingCandidate = (multiPipFilter || multiManaCombo || anyMultiManaProducer) && !disposable;
