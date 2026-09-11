@@ -1341,6 +1341,62 @@ public class AutoPaymentTest extends SimulationTest {
                 canAutoPay(game, p, cost("7 U U U"), sa));
     }
 
+    // Land in hand must not skip the fail-fast quantity gate (hand lands are not activatable).
+    @Test
+    public void failsFastWithLandInHand() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Mountain", p);
+        addCardToZone("Mountain", p, ZoneType.Hand);
+        Card spell = addCardToZone("Chandra, Fire Artisan", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertFalse("1 Mountain cannot pay {2}{R}{R} even with a land in hand",
+                canAutoPay(game, p, cost("2 R R"), sa));
+    }
+
+    // Combo OR land (Savage Lands) produces 1 mana, not one per listed color — fail-fast must not overcount.
+    @Test
+    public void failsFastWithSingleComboLand() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card land = addCard("Savage Lands", p);
+        land.setTapped(false);
+        Card spell = addCardToZone("Aftermath Analyst", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertFalse("1 Savage Lands cannot pay {1}{G}",
+                canAutoPay(game, p, cost("1 G"), sa));
+        AssertJUnit.assertFalse("1 Savage Lands cannot pay {2}",
+                canAutoPay(game, p, cost("2"), sa));
+    }
+
+    // Hand-activatable mana (Spirit Guide) must still count toward the optimistic total.
+    @Test
+    public void spiritGuideInHandCountsTowardQuickExit() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Mountain", p);
+        addCardToZone("Simian Spirit Guide", p, ZoneType.Hand);
+        Card spell = addCardToZone("Shock", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue("Mountain + Simian Spirit Guide should pay {R}{R}",
+                canAutoPay(game, p, cost("R R"), sa));
+    }
+
     // Pure generic: spend colorless land before a colored basic (unless hand needs dedicated {C}).
     @Test
     public void prefersReliquaryTowerOverPlainsForGeneric() {

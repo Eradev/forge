@@ -771,8 +771,9 @@ public class ComputerUtilMana {
 
             // Fail-fast when even optimistic total (map + TapsForMana) cannot cover CMC.
             // Cheap estimate undercounts ProduceMana/TapsForMana, so only after a short cheap
-            // total (and no hand mana) do we build the map for the optimistic check.
-            if (need > 0 && estimate.total < need && !handHasManaAbility(ai)) {
+            // total do we build the map for the optimistic check. That map already includes
+            // hand-activatable mana (e.g. Spirit Guides), so no separate hand-mana guard.
+            if (need > 0 && estimate.total < need) {
                 final int maxAvailable = estimateMaxManaAvailable(ai, checkPlayable, ctx);
                 if (maxAvailable < need) {
                     final int needFinal = need;
@@ -1706,19 +1707,37 @@ public class ComputerUtilMana {
         return best;
     }
 
-    /** Max of declared generation and predicted tap output (includes TapsForMana triggers). */
+    /**
+     * Max of declared generation and predicted tap output (includes TapsForMana triggers).
+     * Combo/Any/Special abilities must not treat color-option strings like {@code Combo B R G}
+     * as multiple pips — only tokens beyond the ability's own produced string are bonuses.
+     */
     private static int optimisticManaFromAbility(final SpellAbility ma, final Player ai) {
-        int fromAmount = ma.amountOfManaGenerated(true);
+        final int fromAmount = ma.amountOfManaGenerated(true);
         final String predicted = predictManafromSpellAbility(ma, ai, ManaCostShard.GENERIC);
-        int fromPredicted = 0;
-        if (StringUtils.isNotBlank(predicted)) {
-            for (final String part : TextUtil.split(predicted.trim(), ' ')) {
-                if (StringUtils.isNotBlank(part)) {
-                    fromPredicted++;
-                }
+        if (StringUtils.isBlank(predicted)) {
+            return fromAmount;
+        }
+        final AbilityManaPart mp = ma.getManaPart();
+        if (mp != null && (mp.isComboMana() || mp.isAnyMana() || mp.isSpecialMana())) {
+            final int baseParts = countManaStringParts(predictManaReplacement(ma, ai, ManaCostShard.GENERIC));
+            final int predParts = countManaStringParts(predicted);
+            return fromAmount + Math.max(0, predParts - baseParts);
+        }
+        return Math.max(fromAmount, countManaStringParts(predicted));
+    }
+
+    private static int countManaStringParts(final String mana) {
+        if (StringUtils.isBlank(mana)) {
+            return 0;
+        }
+        int n = 0;
+        for (final String part : TextUtil.split(mana.trim(), ' ')) {
+            if (StringUtils.isNotBlank(part)) {
+                n++;
             }
         }
-        return Math.max(fromAmount, fromPredicted);
+        return n;
     }
 
     /**
@@ -1731,15 +1750,6 @@ public class ComputerUtilMana {
         if (ManaSourceTraits.of(ma).variableX) {
             ManaPaymentExecution.syncVariableManaX(ma, ai);
         }
-    }
-
-    private static boolean handHasManaAbility(final Player ai) {
-        for (final Card c : ai.getCardsIn(ZoneType.Hand)) {
-            if (c != null && !c.getManaAbilities().isEmpty()) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static boolean costTooComplexForQuickSufficiency(final ManaCostBeingPaid cost, final SpellAbility sa) {
@@ -2110,10 +2120,12 @@ public class ComputerUtilMana {
         }
         for (final String manaPart : TextUtil.split(produced.trim(), ' ')) {
             if (StringUtils.isNumeric(manaPart)) {
-                manaMap.put(ManaAtom.GENERIC, ma);
+                if (!manaMap.containsEntry(ManaAtom.GENERIC, ma)) {
+                    manaMap.put(ManaAtom.GENERIC, ma);
+                }
             } else {
                 final byte atom = ManaAtom.fromName(MagicColor.toShortString(manaPart));
-                if (atom != 0) {
+                if (atom != 0 && !manaMap.containsEntry((int) atom, ma)) {
                     manaMap.put((int) atom, ma);
                 }
             }
