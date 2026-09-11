@@ -368,6 +368,11 @@ final class ManaAbilitySort {
     static int anyManaPreferenceClass(final ManaAbilitySortContext ctx, final SpellAbility ma,
             final boolean rejectColorlessOpponent) {
         final boolean any = ManaFilterConsolidation.isAnyManaConsolidatingFilter(ma) && ctx.consolidates(ma);
+        // Free multi-mana combo/any (Firemind Vessel) must not lose to a {C}
+        // land when several generic pips remain — one activation can cover them.
+        if (ManaPaymentExecution.isMultiManaProducer(ma)) {
+            return 0;
+        }
         if (!rejectColorlessOpponent) {
             return any ? 0 : 1;
         }

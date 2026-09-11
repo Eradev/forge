@@ -468,7 +468,7 @@ final class ManaPaymentExecution {
         private void properties(final SpellAbility ma, final boolean[] out) {
             final ManaSourceTraits t = ManaSourceTraits.of(ma);
             out[MULTI_SHARD] = t.multiPipFilter || t.comboFilter;
-            out[MULTI_MANA] = t.multiManaProducer && !t.anyMultiManaProducer && t.producedAmount >= remaining;
+            out[MULTI_MANA] = t.multiManaProducer && t.producedAmount >= remaining;
             out[MULTI_MANA_DISPOSABLE] = t.multiManaDisposable && t.producedAmount >= remaining;
             out[SELF_SAC_DISPOSABLE] = t.disposable && !t.sacrificesOther;
             out[DIRECT_COLORED] = producesShardDirectly(ma, toPay);
