@@ -549,6 +549,37 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals(1, countTapped(game, "Plains"));
     }
 
+    // --- Free multi-mana combo (Firemind Vessel) ---
+
+    /**
+     * A free Combo AnyDifferent Amount 2 producer must cover {@code {2}} alone rather than tapping a
+     * colorless land for one pip and the vessel for the other.
+     */
+    @Test
+    public void freeMultiManaComboCoversDoubleGenericAlone() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card vessel = addCard("Firemind Vessel", p);
+        vessel.setTapped(false);
+        addCard("Study Hall", p);
+        Card spell = addCardToZone("Arcane Signet", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("2"), sa));
+
+        CardCollection sources = predictedManaSources(game, p, cost("2"), sa);
+        AssertJUnit.assertEquals("Only Firemind Vessel should be tapped", 1, sources.size());
+        AssertJUnit.assertEquals("Firemind Vessel", sources.get(0).getName());
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("2"), sa));
+        AssertJUnit.assertTrue(vessel.isTapped());
+        AssertJUnit.assertEquals("Study Hall should stay untapped", 0, countTapped(game, "Study Hall"));
+    }
+
     @Test
     public void paymentPlanPreviewIncludesPetalSacrificedForSignetActivation() {
         Game game = initAndCreateGame();
