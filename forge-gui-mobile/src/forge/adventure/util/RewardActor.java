@@ -603,6 +603,7 @@ public class RewardActor extends Actor implements Disposable, ImageFetcher.Callb
             case LONG_PRESS -> {
                 if (!frontSideUp())
                     return;
+                hover = false;
                 try {
                     List<RewardActor> rewards = RewardScene.instance().getGeneratedRewards();
                     int index = rewards.indexOf(this);
@@ -619,6 +620,7 @@ public class RewardActor extends Actor implements Disposable, ImageFetcher.Callb
                         flip();
                         return;
                     }
+                    hover = false;
                     Forge.switchScene(ViewRewardsScene.getInstance(List.of(RewardActor.this), 0));
                 } else {
                     if (flipOnClick)
@@ -629,12 +631,7 @@ public class RewardActor extends Actor implements Disposable, ImageFetcher.Callb
                 }
             }
             case ENTER -> hover = true;
-            case EXIT -> {
-                //don't exit hover if the pointer is still hovering
-                if (Controls.actorContainsVector(this, x, y))
-                    return;
-                hover = false;
-            }
+            case EXIT -> hover = false;
             case TOUCH_DOWN -> {
                 if (isAndroidorHasGamepad()) {
                     isDragging = false;
