@@ -636,18 +636,20 @@ final class ManaPaymentExecution {
         if (!ManaFilterConsolidation.isDisposableManaAbility(disposable) || toPay.isGeneric()) {
             return false;
         }
-        if (cost.getGenericManaAmount() == 0) {
-            return hasReusableFreeProducerForEveryOtherColoredShard(cost, toPay, ai, ctx);
-        }
+        final boolean otherColoredShardsCovered = cost.getGenericManaAmount() == 0
+                && hasReusableFreeProducerForEveryOtherColoredShard(cost, toPay, ai, ctx);
         if (hasAlternativeExcept(alternatives, disposable, ma -> isReusableFreeManaForShard(ma, toPay))) {
             return false;
         }
         final ListMultimap<Integer, SpellAbility> manaAbilityMap = ComputerUtilMana.getOrBuildManaAbilityMap(ai, true, ctx);
         final List<SpellAbility> filterAlts = consolidatingFilterAlternatives(alternatives, disposable);
         if (filterAlts.isEmpty()) {
+            return otherColoredShardsCovered;
+        }
+        if (filterAlts.stream().anyMatch(ma -> consolidatorBeatsDisposable(ma, cost, ai, manaAbilityMap, ctx))) {
             return false;
         }
-        return filterAlts.stream().noneMatch(ma -> consolidatorBeatsDisposable(ma, cost, ai, manaAbilityMap, ctx));
+        return cost.getGenericManaAmount() > 0 || otherColoredShardsCovered;
     }
 
     static List<SpellAbility> consolidatingFilterAlternatives(final List<SpellAbility> alternatives,
@@ -2120,12 +2122,6 @@ final class ManaPaymentExecution {
         final Card filterHost = filter.getHostCard();
         if (maList.stream().anyMatch(other -> other != filter && other.getHostCard() != filterHost
                 && isReusableFreeManaForShard(other, toPay))) {
-            return true;
-        }
-        if (!toPay.isGeneric() && cost != null && cost.getGenericManaAmount() == 0 && ai != null
-                && maList.stream().anyMatch(other -> other != filter && other.getHostCard() != filterHost
-                        && ManaFilterConsolidation.isDisposableManaAbility(other))
-                && hasReusableFreeProducerForEveryOtherColoredShard(cost, toPay, ai, ctx)) {
             return true;
         }
         final ListMultimap<Integer, SpellAbility> manaAbilityMap = ai != null
