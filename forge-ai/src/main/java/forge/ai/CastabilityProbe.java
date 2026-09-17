@@ -13,6 +13,7 @@ import forge.game.player.Player;
 import forge.game.spellability.SpellAbility;
 import forge.game.zone.ZoneType;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
@@ -109,7 +110,8 @@ public final class CastabilityProbe {
         final boolean multicolorHand = ManaPaymentExecution.handHasMulticolorManaSpells(ai, sa, ctx);
         final ManaPaymentContext probeCtx = ctx.withFilterProbe();
         ManaPaymentExecution.AlternativeScan altScan = null;
-        List<SpellAbility> toProbe = capCandidates(candidates);
+        List<SpellAbility> toProbe = avoidUnnecessaryDisposables(cost, toPay, candidates, ai, ctx);
+        toProbe = capCandidates(toProbe);
         if (ManaPaymentContext.fastHeuristics() && toProbe.size() > 1) {
             altScan = ManaPaymentExecution.AlternativeScan.of(candidates, toPay,
                     ManaPaymentExecution.remainingPipsForShard(cost, toPay));
@@ -166,6 +168,26 @@ public final class CastabilityProbe {
             }
         }
         return best;
+    }
+
+    /**
+     * Castability is compared only among strategically acceptable payments. Otherwise sacrificing a
+     * Petal can win merely because it leaves both halves of a reusable filter pair untapped, even though
+     * that pair can pay now and preserve the permanent.
+     */
+    private static List<SpellAbility> avoidUnnecessaryDisposables(final ManaCostBeingPaid cost,
+            final ManaCostShard toPay, final List<SpellAbility> candidates, final Player ai,
+            final ManaPaymentContext ctx) {
+        final List<SpellAbility> preferred = new ArrayList<>(candidates.size());
+        for (final SpellAbility cand : candidates) {
+            if (ManaFilterConsolidation.isDisposableManaAbility(cand)
+                    && !ManaPaymentExecution.disposableIsReasonableForShard(
+                            cand, cost, toPay, candidates, ai, ctx)) {
+                continue;
+            }
+            preferred.add(cand);
+        }
+        return preferred.isEmpty() ? candidates : preferred;
     }
 
     /**
