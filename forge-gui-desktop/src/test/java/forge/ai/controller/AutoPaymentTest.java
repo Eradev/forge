@@ -209,6 +209,35 @@ public class AutoPaymentTest extends SimulationTest {
     }
 
     @Test
+    public void studyHallBeatsLotusPetalForOneOfSeveralColoredPips() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Tundra", p);
+        addCard("Island", p);
+        addCard("Mox Pearl", p);
+        addCard("Study Hall", p);
+        addCard("Lotus Petal", p);
+        addCardToZone("Shock", p, ZoneType.Hand); // exercise castability-aware source selection
+        Card spell = addCardToZone("Esper Charm", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("W U B");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Study Hall should produce {B}; actual sources: " + sources,
+                sources.anyMatch(c -> "Study Hall".equals(c.getName())));
+        AssertJUnit.assertTrue("Tundra should pay Study Hall's {1}",
+                sources.anyMatch(c -> "Tundra".equals(c.getName())));
+        AssertJUnit.assertFalse("Lotus Petal should not be sacrificed",
+                sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
+    }
+
+    @Test
     public void signetConsolidatesColoredShardsOverLotusPetal() {
         Game game = initAndCreateGame();
         Player p = game.getPlayers().get(1);
