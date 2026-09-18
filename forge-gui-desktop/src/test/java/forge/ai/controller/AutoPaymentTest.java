@@ -237,6 +237,36 @@ public class AutoPaymentTest extends SimulationTest {
                 sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
     }
 
+    // Without a surplus dual, Study Hall must not steal Island/Mox needed for {U}/{W}.
+    @Test
+    public void lotusPetalBeatsStudyHallWhenActivatorIsDedicatedColoredPip() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Island", p);
+        addCard("Mox Pearl", p);
+        addCard("Study Hall", p);
+        addCard("Lotus Petal", p);
+        Card spell = addCardToZone("Esper Charm", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("W U B");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Island should pay {U}; actual sources: " + sources,
+                sources.anyMatch(c -> "Island".equals(c.getName())));
+        AssertJUnit.assertTrue("Mox Pearl should pay {W}",
+                sources.anyMatch(c -> "Mox Pearl".equals(c.getName())));
+        AssertJUnit.assertTrue("Lotus Petal should pay {B}",
+                sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
+        AssertJUnit.assertFalse("Study Hall should stay untapped",
+                sources.anyMatch(c -> "Study Hall".equals(c.getName())));
+    }
+
     @Test
     public void signetConsolidatesColoredShardsOverLotusPetal() {
         Game game = initAndCreateGame();
