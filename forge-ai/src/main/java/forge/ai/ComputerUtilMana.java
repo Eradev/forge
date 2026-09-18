@@ -43,14 +43,14 @@ import java.util.*;
 public class ComputerUtilMana {
 
     /**
-     * Full stranding / efficiency re-simulation runs for payment-prompt preview and production Auto-pay.
-     * AI feasibility dry-runs ({@link #canPayManaCost}) use sort order only to avoid M2 timeouts.
+     * Full stranding / efficiency re-simulation for payment-prompt preview and production Auto-pay.
+     * AI feasibility dry-runs ({@link #canPayManaCost}) use {@link ManaPaymentContext.Thoroughness#SORT_ONLY}.
      */
     static boolean useFullPaymentProbes(final boolean test, final ManaPaymentContext ctx) {
-        if (!test) {
-            return true;
+        if (ctx == null) {
+            return !test;
         }
-        return ctx != null && ctx.paymentPromptPreview;
+        return ctx.useFullPaymentProbes(test);
     }
 
     public static boolean canPayManaCost(ManaCostBeingPaid cost, final SpellAbility sa, final Player ai, final boolean effect) {
@@ -609,6 +609,16 @@ public class ComputerUtilMana {
         return CastabilityProbe.getDryRunCountForTests();
     }
 
+    /** Test hook: reset all mana-evaluation work counters. */
+    public static void resetManaPaymentEvalStatsForTests() {
+        ManaPaymentEvalStats.reset();
+    }
+
+    /** Test hook: summary of mana-evaluation work since last reset. */
+    public static String getManaPaymentEvalStatsSummaryForTests() {
+        return ManaPaymentEvalStats.summary();
+    }
+
     static String capComboManaProduced(final String manaProduced, final int maxMana) {
         if (manaProduced == null || manaProduced.isEmpty() || maxMana <= 0) {
             return manaProduced;
@@ -868,8 +878,7 @@ public class ComputerUtilMana {
         ListMultimap<ManaCostShard, SpellAbility> sourcesForShards = groupAndOrderToPayShards(ai, manaAbilityMap, cost);
         if (hasConverge) {
             // add extra colors for paying converge
-            final int unpaidColors = cost.getUnpaidColors() + cost.getColorsPaid() ^ ManaCostShard.COLORS_SUPERPOSITION;
-            for (final MagicColor.Color color : ColorSet.fromMask(unpaidColors)) {
+            for (final MagicColor.Color color : ColorSet.fromMask(unpaidConvergeColorMask(cost))) {
                 final byte b = color.getColorMask();
                 final ManaCostShard shard = ManaCostShard.valueOf(b);
                 if (!sourcesForShards.containsKey(shard)) {
@@ -1202,6 +1211,14 @@ public class ComputerUtilMana {
         }
 
         return false;
+    }
+
+    /**
+     * Color mask of converge colors still needed: unpaid colored requirements plus colors not yet paid,
+     * using {@link ManaCostShard#COLORS_SUPERPOSITION} so already-paid colors drop out of the "need" set.
+     */
+    static int unpaidConvergeColorMask(final ManaCostBeingPaid cost) {
+        return cost.getUnpaidColors() + cost.getColorsPaid() ^ ManaCostShard.COLORS_SUPERPOSITION;
     }
 
     static ManaCostShard getNextShardToPay(ManaCostBeingPaid cost, Multimap<ManaCostShard, SpellAbility> sourcesForShards) {
@@ -1953,13 +1970,14 @@ public class ComputerUtilMana {
         }
         // The map depends only on board state (untapped sources, playable abilities), never on the planner's
         // reservation memory — that filtering happens downstream (canPayShardWithSpellAbility, valid-choice
-        // collection). It is built once per outer payment and dropped after real activations
-        // (ManaPaymentPlanCache.invalidateBoardMemos), so nested probes never rebuild it.
+        // collection). Built once per outer payment; production taps drop the activated ability via
+        // ManaPaymentPlanCache.invalidateActivatedAbility (full rebuild only when the host leaves).
         if (ctx.caches.manaAbilityMap != null && ctx.caches.uniqueManaAbilities != null) {
             return ctx.caches.uniqueManaAbilities;
         }
         final List<SpellAbility> unique = new ArrayList<>();
         final ListMultimap<Integer, SpellAbility> map = groupSourcesByManaColor(ai, checkPlayable, ctx, unique);
+        ManaPaymentEvalStats.recordManaMapBuild();
         ctx.caches.manaAbilityMap = map;
         ctx.caches.uniqueManaAbilities = unique;
         return unique;
@@ -2015,7 +2033,6 @@ public class ComputerUtilMana {
                 }
 
                 // don't use abilities with dangerous drawbacks
-                // TODO this has already been checked earlier
                 AbilitySub sub = m.getSubAbility();
                 if (sub != null && !SpellApiToAi.Converter.get(sub).chkDrawbackWithSubs(ai, sub).willingToPlay()) {
                     continue;
