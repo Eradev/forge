@@ -78,7 +78,8 @@ public final class CastabilityProbe {
             return false;
         }
         if (host.isInZone(ZoneType.Hand) || host.isInZone(ZoneType.Command)) {
-            return test ? ctx != null && ctx.paymentPromptPreview : true;
+            // Production: always. Test: only FULL thoroughness (payment-prompt preview).
+            return test ? ctx != null && ctx.thoroughness == ManaPaymentContext.Thoroughness.FULL : true;
         }
         return false;
     }
@@ -112,7 +113,10 @@ public final class CastabilityProbe {
         ManaPaymentExecution.AlternativeScan altScan = null;
         List<SpellAbility> toProbe = avoidUnnecessaryDisposables(cost, toPay, candidates, ai, ctx);
         toProbe = capCandidates(toProbe);
-        if (ManaPaymentContext.fastHeuristics() && toProbe.size() > 1) {
+        // Efficiency prefilter: castability dry-runs only among the cheapest tier. Disabled when
+        // skipOptimizations so before/after MANA_EVAL_STATS stay comparable.
+        if (toProbe.size() > 1
+                && (!ManaPaymentContext.skipOptimizations() || ManaPaymentContext.fastHeuristics())) {
             altScan = ManaPaymentExecution.AlternativeScan.of(candidates, toPay,
                     ManaPaymentExecution.remainingPipsForShard(cost, toPay));
             toProbe = mostEfficient(toProbe, cost, sa, ai, toPay, candidates, altScan, consumedBuilder, probeCtx);
