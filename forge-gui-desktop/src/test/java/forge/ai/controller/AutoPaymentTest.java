@@ -3,6 +3,7 @@ package forge.ai.controller;
 import com.google.common.collect.Lists;
 import forge.ai.CastabilityProbe;
 import forge.ai.ComputerUtilMana;
+import forge.ai.ManaPaymentEvalStats;
 import forge.ai.PlayerControllerAi;
 import forge.ai.simulation.GameSimulator;
 import forge.ai.simulation.Plan;
@@ -20,12 +21,26 @@ import forge.game.player.Player;
 import forge.game.spellability.SpellAbility;
 import forge.game.zone.ZoneType;
 import org.testng.AssertJUnit;
+import org.testng.annotations.AfterClass;
+import org.testng.annotations.BeforeClass;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
 import java.util.List;
 
 public class AutoPaymentTest extends SimulationTest {
+
+    @BeforeClass
+    public void resetManaEvalStats() {
+        ManaPaymentEvalStats.reset();
+    }
+
+    @AfterClass
+    public void reportManaEvalStats() {
+        // Mana-evaluation work counters (not TestNG wall time). Compare with/without
+        // -Dforge.ai.manaPayment.skipOptimizations=true
+        System.out.println("MANA_EVAL_STATS " + ManaPaymentEvalStats.summary());
+    }
 
     @BeforeMethod
     public void enableCastabilityProbeForPaymentTests() {
@@ -265,6 +280,39 @@ public class AutoPaymentTest extends SimulationTest {
                 sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
         AssertJUnit.assertFalse("Study Hall should stay untapped",
                 sources.anyMatch(c -> "Study Hall".equals(c.getName())));
+    }
+
+    // Glacial Fortress can pay {U} directly; using it as Study Hall fuel for {B} still needs Petal for {U}.
+    @Test
+    public void studyHallNotUsedWhenDualIsNeededForOtherColorWithPetal() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Plains", p);
+        addCard("Glacial Fortress", p);
+        addCard("Study Hall", p);
+        addCard("Lotus Petal", p);
+        Card spell = addCardToZone("Esper Charm", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("W U B");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Plains should pay {W}; actual sources: " + sources,
+                sources.anyMatch(c -> "Plains".equals(c.getName())));
+        AssertJUnit.assertTrue("Glacial Fortress should pay {U}",
+                sources.anyMatch(c -> "Glacial Fortress".equals(c.getName())));
+        AssertJUnit.assertTrue("Lotus Petal should pay {B}",
+                sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
+        AssertJUnit.assertFalse("Study Hall should not burn a dual as {1} fuel when Petal can pay the pip",
+                sources.anyMatch(c -> "Study Hall".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("W U B"), sa));
+        AssertJUnit.assertEquals(0, countTapped(game, "Study Hall"));
     }
 
     @Test
