@@ -646,7 +646,7 @@ final class ManaPaymentExecution {
         if (filterAlts.isEmpty()) {
             return otherColoredShardsCovered;
         }
-        if (filterAlts.stream().anyMatch(ma -> consolidatorBeatsDisposable(ma, cost, ai, manaAbilityMap, ctx))) {
+        if (filterAlts.stream().anyMatch(ma -> consolidatorBeatsDisposable(ma, cost, toPay, ai, manaAbilityMap, ctx))) {
             return false;
         }
         return cost.getGenericManaAmount() > 0 || otherColoredShardsCovered;
@@ -950,19 +950,90 @@ final class ManaPaymentExecution {
 
     /** Study Hall-style filter is preferable to sacrificing a disposable. */
     static boolean anyManaFilterBeatsDisposable(final SpellAbility filter,
-            final ManaCostBeingPaid cost, final Player ai,
+            final ManaCostBeingPaid cost, final ManaCostShard payingShard, final Player ai,
             final ListMultimap<Integer, SpellAbility> manaAbilityMap, final ManaPaymentContext ctx) {
         return canActivateFilter(ai, filter, manaAbilityMap, true)
-                && !filterActivationCompetesForSpellGeneric(filter, cost, ai, ctx);
+                && !filterActivationCompetesForSpellGeneric(filter, cost, ai, ctx)
+                && !filterActivationStealsDedicatedColoredProducers(filter, cost, payingShard, ai, ctx);
     }
 
     static boolean consolidatorBeatsDisposable(final SpellAbility filter, final ManaCostBeingPaid cost,
-            final Player ai, final ListMultimap<Integer, SpellAbility> manaAbilityMap,
-            final ManaPaymentContext ctx) {
+            final ManaCostShard payingShard, final Player ai,
+            final ListMultimap<Integer, SpellAbility> manaAbilityMap, final ManaPaymentContext ctx) {
         if (ManaFilterConsolidation.isAnyManaConsolidatingFilter(filter)) {
-            return anyManaFilterBeatsDisposable(filter, cost, ai, manaAbilityMap, ctx);
+            return anyManaFilterBeatsDisposable(filter, cost, payingShard, ai, manaAbilityMap, ctx);
         }
         return canActivateFilter(ai, filter, manaAbilityMap, false);
+    }
+
+    /**
+     * True when activating {@code filter} would have to consume a free reusable source that is the only
+     * coverage for another unpaid colored pip of this cost (e.g. Island funding Study Hall for {@code {B}}
+     * when {@code {U}} still needs that Island). Prefer a disposable for the missing color instead.
+     */
+    static boolean filterActivationStealsDedicatedColoredProducers(final SpellAbility filter,
+            final ManaCostBeingPaid cost, final ManaCostShard payingShard, final Player ai,
+            final ManaPaymentContext ctx) {
+        if (filter == null || filter.getPayCosts() == null || cost == null || ai == null) {
+            return false;
+        }
+        final CostPartMana costMana = filter.getPayCosts().getCostMana();
+        if (costMana == null) {
+            return false;
+        }
+        final int activationGeneric = costMana.getMana().getGenericCost();
+        if (activationGeneric <= 0) {
+            return false;
+        }
+        final ListMultimap<Integer, SpellAbility> manaAbilityMap =
+                ComputerUtilMana.getOrBuildManaAbilityMap(ai, true, ctx);
+        final Set<Card> surplusHosts = new HashSet<>();
+        for (final SpellAbility candidate : manaAbilityMap.get(ManaAtom.GENERIC)) {
+            if (!isFreeReusableSourceForNestedActivation(candidate, filter)
+                    || !isCurrentlyAvailableForNestedActivation(ai, candidate, filter)) {
+                continue;
+            }
+            final Card host = candidate.getHostCard();
+            if (host == null || surplusHosts.contains(host)) {
+                continue;
+            }
+            if (isDedicatedProducerForOtherUnpaidColoredShard(candidate, cost, payingShard, manaAbilityMap, ai)) {
+                continue;
+            }
+            surplusHosts.add(host);
+            if (surplusHosts.size() >= activationGeneric) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** True when {@code candidate}'s host is the only reusable free producer for some other unpaid colored pip. */
+    static boolean isDedicatedProducerForOtherUnpaidColoredShard(final SpellAbility candidate,
+            final ManaCostBeingPaid cost, final ManaCostShard payingShard,
+            final ListMultimap<Integer, SpellAbility> manaAbilityMap, final Player ai) {
+        final Card host = candidate == null ? null : candidate.getHostCard();
+        if (host == null || cost == null) {
+            return false;
+        }
+        for (final ManaCostShard shard : cost.getDistinctShards()) {
+            if (shard.isGeneric() || shard == ManaCostShard.COLORLESS || shard.isPhyrexian()) {
+                continue;
+            }
+            if (payingShard != null && shard == payingShard) {
+                continue;
+            }
+            if (cost.getUnpaidShards(shard) <= 0) {
+                continue;
+            }
+            if (!isReusableFreeManaForShard(candidate, shard)) {
+                continue;
+            }
+            if (!hasOtherReusableProducerForShard(manaAbilityMap, shard, host, ai)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -2127,7 +2198,7 @@ final class ManaPaymentExecution {
         final ListMultimap<Integer, SpellAbility> manaAbilityMap = ai != null
                 ? ComputerUtilMana.getOrBuildManaAbilityMap(ai, true, ctx) : null;
         if (cost != null && cost.getGenericManaAmount() > 0 && !toPay.isGeneric() && manaAbilityMap != null) {
-            if (anyManaFilterBeatsDisposable(filter, cost, ai, manaAbilityMap, ctx)) {
+            if (anyManaFilterBeatsDisposable(filter, cost, toPay, ai, manaAbilityMap, ctx)) {
                 return false;
             }
             for (SpellAbility other : maList) {
