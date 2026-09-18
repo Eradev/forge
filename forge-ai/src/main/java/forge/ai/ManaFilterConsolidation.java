@@ -167,6 +167,10 @@ final class ManaFilterConsolidation {
         int score = 0;
         int maxManaProduced = 0;
         boolean hasManaCostAbility = false;
+        boolean disposable = false;
+        boolean selfSacCreature = false;
+        boolean tapsOtherCreature = false;
+        boolean sacrificesOther = false;
         final Player controller = card.getController();
 
         for (SpellAbility ability : card.getSpellAbilities()) {
@@ -180,9 +184,11 @@ final class ManaFilterConsolidation {
                 final ManaSourceTraits t = ManaSourceTraits.of(ability);
                 score += t.manaScore;
                 maxManaProduced = Math.max(maxManaProduced, t.producedAmount);
-                if (t.hasManaActivationCost) {
-                    hasManaCostAbility = true;
-                }
+                hasManaCostAbility |= t.hasManaActivationCost;
+                disposable |= t.disposable;
+                selfSacCreature |= t.selfSacCreature;
+                tapsOtherCreature |= t.requiresTappingOtherCreature;
+                sacrificesOther |= t.sacrificesOther;
                 score += t.netNegativeAnyManaFilterLoss * NET_NEGATIVE_ANY_MANA_FILTER_PENALTY;
             } else if (!ability.isTrigger() && ability.isPossible()) {
                 score += 13;
@@ -208,16 +214,16 @@ final class ManaFilterConsolidation {
         if (hasManaCostAbility) {
             score += FILTER_SINGLE_SHARD_PENALTY;
         }
-        if (anyManaAbility(card, t -> t.disposable)) {
+        if (disposable) {
             score += DISPOSABLE_MANA_PENALTY;
         }
-        if (anyManaAbility(card, t -> t.selfSacCreature)) {
+        if (selfSacCreature) {
             score += SELF_SAC_CREATURE_MANA_PENALTY;
         }
-        if (anyManaAbility(card, t -> t.requiresTappingOtherCreature)) {
+        if (tapsOtherCreature) {
             score += CREATURE_TAP_MANA_PENALTY;
         }
-        if (anyManaAbility(card, t -> t.sacrificesOther)) {
+        if (sacrificesOther) {
             score += EXTERNAL_SACRIFICE_MANA_PENALTY;
         }
         if (isManaReserveHost(card)) {

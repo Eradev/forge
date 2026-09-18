@@ -21,6 +21,18 @@ import java.util.function.Supplier;
  * Planner state passed through nested {@link ComputerUtilMana#payManaCost} calls.
  */
 final class ManaPaymentContext {
+    /** Memo for {@link ManaPaymentExecution#consolidatorCoverage} under one unpaid-cost fingerprint. */
+    static final class ConsolidatorCoverageMemo {
+        final int costKey;
+        /** {@code null} means the consolidator does not cover the cost in this state. */
+        final Set<Card> consumed;
+
+        ConsolidatorCoverageMemo(final int costKey, final Set<Card> consumed) {
+            this.costKey = costKey;
+            this.consumed = consumed;
+        }
+    }
+
     /** Per-outer-payment scratch shared by nested feasibility probes (CastabilityProbe). */
     static final class CastabilityProbeScratch {
         final Set<ManaCostShard> unavailableColoredShards = new HashSet<>();
@@ -91,6 +103,11 @@ final class ManaPaymentContext {
         /** Battlefield-only mana estimate, indexed by {@code checkPlayable ? 1 : 0}; pool is added live. */
         final ComputerUtilMana.ManaAvailabilityEstimate[] battlefieldManaEstimate =
                 new ComputerUtilMana.ManaAvailabilityEstimate[2];
+        /**
+         * {@link ManaPaymentExecution#consolidatorCoverage} results for the current unpaid-cost key.
+         * Cleared when permanent reservations change. Value {@code null} means "does not cover".
+         */
+        final Map<SpellAbility, ConsolidatorCoverageMemo> consolidatorCoverageByFilter = new IdentityHashMap<>();
 
         /** Any net-positive consolidator (signet / combo land) on the battlefield, tapped or not. */
         boolean boardHasNetPositiveConsolidator(final Player ai) {
@@ -154,6 +171,7 @@ final class ManaPaymentContext {
 
         /** Drop board-state-derived memos after a real (production) activation changed the board. */
         void invalidateBoardMemos() {
+            ManaPaymentEvalStats.recordBoardMemoFullInvalidation();
             sourceTraits.clear();
             hostSortScores.clear();
             playableManaCache.clear();
@@ -164,24 +182,110 @@ final class ManaPaymentContext {
             boardHasBankingPair = null;
             battlefieldManaEstimate[0] = null;
             battlefieldManaEstimate[1] = null;
+            consolidatorCoverageByFilter.clear();
+        }
+
+        /**
+         * After permanently reserving a mana source for this payment, drop coverage memos that depended
+         * on the previous free-source set.
+         */
+        void bumpReservations() {
+            consolidatorCoverageByFilter.clear();
+        }
+
+        /**
+         * Drop memos for one activated ability after a real tap that does not remove the host. Sibling
+         * abilities that remain usable (e.g. Heart of Ramos sac after tap) stay in the map. Falls back to
+         * {@link #invalidateBoardMemos} when the host leaves the battlefield.
+         */
+        void invalidateActivatedAbility(final SpellAbility activated) {
+            if (activated == null) {
+                invalidateBoardMemos();
+                return;
+            }
+            ManaSourceTraits u = sourceTraits.get(activated);
+            if (u == null) {
+                u = ManaSourceTraits.of(activated);
+            }
+            if (u.hostLeavesBattlefield) {
+                invalidateBoardMemos();
+                return;
+            }
+            ManaPaymentEvalStats.recordBoardMemoIncrementalInvalidation();
+            final Card host = activated.getHostCard();
+            final List<SpellAbility> remove = new ArrayList<>();
+            remove.add(activated);
+            if (uniqueManaAbilities != null && host != null) {
+                for (final SpellAbility s : uniqueManaAbilities) {
+                    if (s != activated && s.getHostCard() == host
+                            && !u.leavesSiblingUsable(ManaSourceTraits.of(s))) {
+                        remove.add(s);
+                    }
+                }
+            }
+            for (final SpellAbility s : remove) {
+                sourceTraits.remove(s);
+            }
+            if (host != null) {
+                hostSortScores.remove(host);
+                playableManaCache.remove(host);
+                if (reusableTapLandSet != null) {
+                    reusableTapLandSet.remove(host);
+                }
+            }
+            boardHasNetPositiveConsolidator = null;
+            boardHasBankingPair = null;
+            battlefieldManaEstimate[0] = null;
+            battlefieldManaEstimate[1] = null;
+            consolidatorCoverageByFilter.clear();
+
+            if (manaAbilityMap == null) {
+                uniqueManaAbilities = null;
+                return;
+            }
+            manaAbilityMap.values().removeIf(remove::contains);
+            if (uniqueManaAbilities != null) {
+                uniqueManaAbilities.removeIf(remove::contains);
+            }
         }
     }
 
     final ManaPaymentPlanCache caches;
     final int depth;
     final boolean inFilterActivationProbe;
+    /**
+     * How thoroughly this payment re-simulates stranding / leftover cover. Set once on the outermost
+     * context: {@link Thoroughness#SORT_ONLY} for AI {@code canPayManaCost}, {@link Thoroughness#FULL}
+     * for payment-prompt Auto and production pay.
+     */
+    final Thoroughness thoroughness;
+    /** True for the human payment-prompt Auto preview dry-run (not the commit). */
     final boolean paymentPromptPreview;
     final boolean tracePaymentPlan;
     String costLabel;
     List<Mana> testDepositedSurplus;
     List<String> planSteps;
 
+    /**
+     * Stranding / leftover-cover policy for an outer payment.
+     * <ul>
+     *   <li>{@link #SORT_ONLY} — trust sort order; cheap generic leftover checks only (AI feasibility).</li>
+     *   <li>{@link #FULL} — nested {@code payManaCost} stranding probes (prompt preview + production).</li>
+     * </ul>
+     */
+    enum Thoroughness {
+        SORT_ONLY,
+        FULL
+    }
+
     private ManaPaymentContext(final ManaPaymentPlanCache caches, final int depth,
-            final boolean inFilterActivationProbe, final boolean paymentPromptPreview,
-            final boolean tracePaymentPlan, final List<Mana> testDepositedSurplus) {
+            final boolean inFilterActivationProbe, final Thoroughness thoroughness,
+            final boolean paymentPromptPreview, final boolean tracePaymentPlan,
+            final List<Mana> testDepositedSurplus) {
         this.caches = caches;
         this.depth = depth;
         this.inFilterActivationProbe = inFilterActivationProbe;
+        this.thoroughness = thoroughness;
         this.paymentPromptPreview = paymentPromptPreview;
         this.tracePaymentPlan = tracePaymentPlan;
         this.testDepositedSurplus = testDepositedSurplus;
@@ -191,15 +295,17 @@ final class ManaPaymentContext {
      * Opt-in "fast heuristics" ({@code -Dforge.ai.manaPayment.fastHeuristics=true}). Trades a few nested
      * dry-runs for cheap counting shortcuts and may change which source the AI taps in edge cases:
      * <ul>
-     *   <li>{@link ManaPaymentExecution#evaluatePaymentImpact}: plain free producers skip the stranding
-     *       dry-run when a Hall-condition count of the remaining free sources already covers the rest.</li>
      *   <li>{@link CastabilityProbe#pickBest}: castability dry-runs only for candidates tied on efficiency.</li>
      *   <li>{@link ManaPaymentExecution#collectValidManaPaymentChoices}: keeps {@code Any}-mana filters that
      *       {@link ManaPaymentExecution#isUselessAnyManaFilter} would drop and lets efficiency scoring rank them.</li>
      * </ul>
+     * Plain free-producer stranding short-circuit via {@link ManaPaymentExecution#freeSourceCountsCover}
+     * is always on (safe / conservative) unless {@code -Dforge.ai.manaPayment.skipOptimizations=true}.
      */
     private static final String FAST_HEURISTICS_PROP = "forge.ai.manaPayment.fastHeuristics";
+    private static final String SKIP_OPTIMIZATIONS_PROP = "forge.ai.manaPayment.skipOptimizations";
     private static volatile Boolean fastHeuristics;
+    private static volatile Boolean skipOptimizations;
 
     static boolean fastHeuristics() {
         Boolean enabled = fastHeuristics;
@@ -210,14 +316,33 @@ final class ManaPaymentContext {
         return enabled;
     }
 
+    /**
+     * When true, disable free-source cover, incremental board-memo invalidation, and the castability
+     * efficiency prefilter — for before/after mana-evaluation cost comparison.
+     */
+    static boolean skipOptimizations() {
+        Boolean enabled = skipOptimizations;
+        if (enabled == null) {
+            enabled = Boolean.getBoolean(SKIP_OPTIMIZATIONS_PROP);
+            skipOptimizations = enabled;
+        }
+        return enabled;
+    }
+
     /** Test hook: force the fast-heuristics flag ({@code null} re-reads the system property). */
     public static void setFastHeuristicsForTests(final Boolean enabled) {
         fastHeuristics = enabled;
     }
 
+    /** Test hook: force skip-optimizations ({@code null} re-reads the system property). */
+    public static void setSkipOptimizationsForTests(final Boolean enabled) {
+        skipOptimizations = enabled;
+    }
+
     /** Fresh outermost context for an AI payment / feasibility check (no plan tracing). */
     static ManaPaymentContext outer() {
-        return new ManaPaymentContext(new ManaPaymentPlanCache(), 1, false, false, false, null);
+        return new ManaPaymentContext(new ManaPaymentPlanCache(), 1, false, Thoroughness.SORT_ONLY,
+                false, false, null);
     }
 
     /**
@@ -228,9 +353,20 @@ final class ManaPaymentContext {
     static ManaPaymentContext outerForPrompt(final boolean preview) {
         final boolean tracePlan = ManaPaymentTracer.planEnabled();
         final ManaPaymentContext ctx = new ManaPaymentContext(new ManaPaymentPlanCache(), 1, false,
-                preview, tracePlan, null);
+                Thoroughness.FULL, preview, tracePlan, null);
         ctx.planSteps = tracePlan ? new ArrayList<>() : null;
         return ctx;
+    }
+
+    /**
+     * Whether stranding / leftover cover should re-simulate payment. Production always does; test-mode
+     * only when this context's {@link #thoroughness} is {@link Thoroughness#FULL} (payment-prompt preview).
+     */
+    boolean useFullPaymentProbes(final boolean test) {
+        if (!test) {
+            return true;
+        }
+        return thoroughness == Thoroughness.FULL;
     }
 
     boolean isOutermost() {
@@ -244,28 +380,28 @@ final class ManaPaymentContext {
 
     ManaPaymentContext withCostLabel(final String label) {
         final ManaPaymentContext next = new ManaPaymentContext(caches, depth, inFilterActivationProbe,
-                paymentPromptPreview, tracePaymentPlan, testDepositedSurplus);
+                thoroughness, paymentPromptPreview, tracePaymentPlan, testDepositedSurplus);
         next.planSteps = planSteps;
         next.costLabel = label;
         return next;
     }
 
     ManaPaymentContext nested() {
-        return new ManaPaymentContext(caches, depth + 1, inFilterActivationProbe, paymentPromptPreview,
-                tracePaymentPlan, testDepositedSurplus);
+        return new ManaPaymentContext(caches, depth + 1, inFilterActivationProbe, thoroughness,
+                paymentPromptPreview, tracePaymentPlan, testDepositedSurplus);
     }
 
     /**
-     * Standalone dry-run that shares this payment's memos but none of its flags, depth, surplus or plan
-     * steps (behaves like {@link #outer()} without rebuilding the board-derived caches).
+     * Standalone dry-run that shares this payment's memos but uses {@link Thoroughness#SORT_ONLY}
+     * (behaves like {@link #outer()} without rebuilding the board-derived caches).
      */
     ManaPaymentContext detachedProbe() {
-        return new ManaPaymentContext(caches, 1, false, false, false, null);
+        return new ManaPaymentContext(caches, 1, false, Thoroughness.SORT_ONLY, false, false, null);
     }
 
     ManaPaymentContext withFilterProbe() {
-        return new ManaPaymentContext(caches, depth, true, paymentPromptPreview, tracePaymentPlan,
-                testDepositedSurplus);
+        return new ManaPaymentContext(caches, depth, true, thoroughness, paymentPromptPreview,
+                tracePaymentPlan, testDepositedSurplus);
     }
 
     /**
@@ -273,8 +409,8 @@ final class ManaPaymentContext {
      * leak into the outer payment as phantom floating mana.
      */
     ManaPaymentContext nestedWithFilterProbe() {
-        return new ManaPaymentContext(caches, depth + 1, true, paymentPromptPreview, tracePaymentPlan,
-                null);
+        return new ManaPaymentContext(caches, depth + 1, true, thoroughness, paymentPromptPreview,
+                tracePaymentPlan, null);
     }
 
     void recordStep(final SpellAbility sa, final boolean test, final String msg) {

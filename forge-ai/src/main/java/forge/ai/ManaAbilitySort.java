@@ -113,24 +113,21 @@ final class ManaAbilitySort {
     public static int compareGenericCandidatesForPayment(final SpellAbility a, final SpellAbility b,
             final GenericColorPreference pref, final int unpaidGeneric, final SpellAbility spellBeingPaid,
             final Player ai) {
+        final ManaSourceTraits ta = ManaSourceTraits.of(a);
+        final ManaSourceTraits tb = ManaSourceTraits.of(b);
         if (unpaidGeneric >= 2) {
-            final boolean noUntap1 = ManaPaymentExecution.doesNotUntapNormally(a);
-            final boolean noUntap2 = ManaPaymentExecution.doesNotUntapNormally(b);
-            if (noUntap1 != noUntap2) {
-                return noUntap1 ? 1 : -1;
+            if (ta.doesNotUntapNormally != tb.doesNotUntapNormally) {
+                return ta.doesNotUntapNormally ? 1 : -1;
             }
-            final boolean multi1 = ManaPaymentExecution.isMultiManaProducer(a);
-            final boolean multi2 = ManaPaymentExecution.isMultiManaProducer(b);
-            if (multi1 != multi2) {
-                return multi1 ? -1 : 1;
+            if (ta.multiManaProducer != tb.multiManaProducer) {
+                return ta.multiManaProducer ? -1 : 1;
             }
-            if (multi1) {
-                return Integer.compare(ManaFilterConsolidation.getManaProducedAmount(b),
-                        ManaFilterConsolidation.getManaProducedAmount(a));
+            if (ta.multiManaProducer) {
+                return Integer.compare(tb.producedAmount, ta.producedAmount);
             }
             if (pref == GenericColorPreference.RESERVE_COLORLESS) {
-                final boolean rock1 = isFreeColorlessManaRock(a);
-                final boolean rock2 = isFreeColorlessManaRock(b);
+                final boolean rock1 = isFreeColorlessManaRock(a, ta);
+                final boolean rock2 = isFreeColorlessManaRock(b, tb);
                 if (rock1 != rock2) {
                     return rock1 ? -1 : 1;
                 }
@@ -140,7 +137,7 @@ final class ManaAbilitySort {
         if (rankCmp != 0) {
             return rankCmp;
         }
-        if (ManaFilterConsolidation.isDisposableManaAbility(a) && ManaFilterConsolidation.isDisposableManaAbility(b)) {
+        if (ta.disposable && tb.disposable) {
             final int disposableCmp = ManaPaymentExecution.compareDisposableCandidates(a, b, unpaidGeneric);
             if (disposableCmp != 0) {
                 return disposableCmp;
@@ -150,8 +147,8 @@ final class ManaAbilitySort {
         if (filterCostCmp != 0) {
             return filterCostCmp;
         }
-        final boolean land1 = a.getHostCard().isLand();
-        final boolean land2 = b.getHostCard().isLand();
+        final boolean land1 = a.getHostCard() != null && a.getHostCard().isLand();
+        final boolean land2 = b.getHostCard() != null && b.getHostCard().isLand();
         if (land1 != land2) {
             return land1 ? 1 : -1;
         }
@@ -160,60 +157,61 @@ final class ManaAbilitySort {
 
     /** Untapped colorless rock with no mana activation cost (Reliquary Tower, Sol Ring, etc.). */
     static boolean isFreeColorlessManaRock(final SpellAbility ma) {
-        return ManaPaymentExecution.producesOnlyColorless(ma) && !ManaFilterConsolidation.hasManaActivationCost(ma)
-                && !ManaFilterConsolidation.isDisposableManaAbility(ma);
+        return isFreeColorlessManaRock(ma, ManaSourceTraits.of(ma));
+    }
+
+    private static boolean isFreeColorlessManaRock(final SpellAbility ma, final ManaSourceTraits t) {
+        return t.producesOnlyColorless && !t.hasManaActivationCost && !t.disposable;
     }
 
     /**
      * Preference rank for paying a generic mana pip. Lower is better.
+     * Delegates to memoized {@link ManaSourceTraits} fields (same policy as host/efficiency scoring).
      */
     static int rankGenericManaSource(final SpellAbility ma, final GenericColorPreference pref) {
-        if (ManaFilterConsolidation.isDisposableManaAbility(ma)) {
-            if (ManaFilterConsolidation.sacrificesOtherPermanentsForMana(ma)) {
+        final ManaSourceTraits t = ManaSourceTraits.of(ma);
+        final Card host = ma.getHostCard();
+        if (t.disposable) {
+            if (t.sacrificesOther) {
                 return 55;
             }
-            if (ManaFilterConsolidation.isSelfSacrificeCreatureMana(ma)) {
+            if (t.selfSacCreature) {
                 return 54;
             }
-            return ManaPaymentExecution.isMultiManaDisposable(ma) ? 48 : 50;
+            return t.multiManaDisposable ? 48 : 50;
         }
-        if (ManaFilterConsolidation.requiresTappingOtherCreatureForMana(ma)) {
+        if (t.requiresTappingOtherCreature) {
             return 49;
         }
-        if (ManaPaymentExecution.doesNotUntapNormally(ma)) {
+        if (t.doesNotUntapNormally) {
             return 44;
         }
-        if (ManaFilterConsolidation.isManaReserveHost(ma.getHostCard())) {
+        if (t.manaReserveHost) {
             return 45;
         }
-        final Cost payCosts = ma.getPayCosts();
-        final boolean hasManaCost = payCosts != null && payCosts.hasManaCost();
-        if (ManaPaymentExecution.producesOnlyColorless(ma) && !hasManaCost) {
+        if (t.producesOnlyColorless && !t.hasManaActivationCost) {
             if (pref == GenericColorPreference.PREFER_COLORLESS) {
                 // Preserve Study Hall-style hosts for their paid any-mana filter; spend plain {C} lands first.
                 if (ManaPaymentExecution.isFreeColorlessOnAnyManaFilterHost(ma)) {
-                    return ma.getHostCard().isLand() ? 12 : 0;
+                    return host != null && host.isLand() ? 12 : 0;
                 }
-                return ma.getHostCard().isLand() ? 10 : 0;
+                return host != null && host.isLand() ? 10 : 0;
             }
             if (pref == GenericColorPreference.RESERVE_COLORLESS) {
                 return 30;
             }
-            return ma.getHostCard().isLand() ? 15 : 0;
+            return host != null && host.isLand() ? 15 : 0;
         }
-        if (hasManaCost) {
-            final int netLoss = ManaFilterConsolidation.netNegativeAnyManaFilterLoss(ma);
-            return netLoss > 0 ? 40 + netLoss : 40;
+        if (t.hasManaActivationCost) {
+            return t.netNegativeAnyManaFilterLoss > 0 ? 40 + t.netNegativeAnyManaFilterLoss : 40;
         }
-        final AbilityManaPart mp = ma.getManaPart();
-        if (mp != null && mp.isAnyMana()) {
+        if (t.anyMana) {
             return pref.reservesColorless() ? 10 : 20;
         }
-        if (mp != null && mp.isComboMana() && !ManaPaymentExecution.producesOnlyColorless(ma)) {
+        if (t.comboMana && !t.producesOnlyColorless) {
             return pref.reservesColorless() ? 10 : 20;
         }
-        if (pref == GenericColorPreference.PREFER_COLORLESS
-                && ManaPaymentExecution.producesColoredManaWithoutFilterCost(ma)) {
+        if (pref == GenericColorPreference.PREFER_COLORLESS && t.producesColoredWithoutFilterCost) {
             return 25;
         }
         return pref.reservesColorless() ? 0 : 10;
@@ -451,30 +449,27 @@ final class ManaAbilitySort {
         return mana != null && mana.contains(shard.toShortString());
     }
 
-    static int colorlessTiebreakClass(final SpellAbility ma, final boolean reserveColorless) {
-        final boolean colorless = ManaPaymentExecution.producesOnlyColorless(ma);
-        if (reserveColorless) {
-            return colorless ? 1 : 0;
-        }
-        return colorless ? 0 : 1;
-    }
-
     /**
      * Independent per-ability key. TimSort requires a total order; pairwise
      * "if both have property P" tests and same-card vs different-card splits do not.
+     * <p>
+     * Generic keys rely on {@link #rankGenericManaSource} for disposable / filter / colorless policy;
+     * remaining slots are unpaid-pip shape, host score, and stable ids (no duplicate no-untap /
+     * colorless-class dimensions that {@code rankGenericManaSource} already encodes).
      */
     static int[] manaSortKey(final ManaAbilitySortContext ctx, final SpellAbility ma, final ManaCostShard shard) {
-        final int[] key = new int[24];
+        final ManaSourceTraits t = ManaSourceTraits.of(ma);
+        final boolean withHandPrefs = shard.isGeneric() && ctx.colorsMostCommon != null
+                && !ctx.colorsMostCommon.isEmpty();
+        final int[] key = new int[shard.isGeneric() ? (withHandPrefs ? 20 : 15) : 11];
         int i = 0;
         if (shard.isGeneric()) {
-            final ManaSourceTraits t = ManaSourceTraits.of(ma);
             key[i++] = (ctx.unpaidGeneric == 1 && ManaPaymentExecution.isTightGenericProducer(ma, 1)) ? 0 : 1;
             key[i++] = ctx.unpaidGeneric >= 2 ? genericMultiPipRank(ctx, ma) : 0;
             key[i++] = ctx.unpaidGeneric >= 2 ? anyManaPreferenceClass(ctx, ma, true) : 0;
             key[i++] = rankGenericManaSource(ma, ctx.genericColorPref);
             key[i++] = anyManaFilterCmcKey(ma);
-            key[i++] = ctx.unpaidGeneric >= 2 && ManaPaymentExecution.doesNotUntapNormally(ma) ? 1 : 0;
-            key[i++] = ctx.unpaidGeneric >= 2 && ManaPaymentExecution.isMultiManaProducer(ma) ? 0 : 1;
+            key[i++] = ctx.unpaidGeneric >= 2 && t.multiManaProducer ? 0 : 1;
             if (ctx.unpaidGeneric == 1) {
                 key[i++] = t.producedAmount;
             } else if (ctx.unpaidGeneric >= 2) {
@@ -484,13 +479,14 @@ final class ManaAbilitySort {
             }
             final Integer score = ctx.manaCardMap.get(ma.getHostCard());
             key[i++] = score == null ? Integer.MAX_VALUE : score;
-            key[i++] = colorlessTiebreakClass(ma, ctx.genericColorPref.reservesColorless());
-            for (int c = 0; c < 5; c++) {
-                if (ctx.colorsMostCommon != null && c < ctx.colorsMostCommon.size()) {
-                    final Set<Card> hosts = ctx.hostsByColor.get(ctx.colorsMostCommon.get(c));
-                    key[i++] = (hosts != null && hosts.contains(ma.getHostCard())) ? 1 : 0;
-                } else {
-                    key[i++] = 0;
+            if (withHandPrefs) {
+                for (int c = 0; c < 5; c++) {
+                    if (c < ctx.colorsMostCommon.size()) {
+                        final Set<Card> hosts = ctx.hostsByColor.get(ctx.colorsMostCommon.get(c));
+                        key[i++] = (hosts != null && hosts.contains(ma.getHostCard())) ? 1 : 0;
+                    } else {
+                        key[i++] = 0;
+                    }
                 }
             }
         } else if (shard != ManaCostShard.COLORLESS) {
@@ -509,13 +505,13 @@ final class ManaAbilitySort {
         final Card host = ma.getHostCard();
         key[i++] = ctx.cardRank.getOrDefault(host, Integer.MAX_VALUE);
         if (ctx.cost.getUnpaidShards(shard) >= 2 || (shard.isGeneric() && ctx.unpaidGeneric >= 2)) {
-            key[i++] = -ManaFilterConsolidation.getComboManaAmount(ma);
+            key[i++] = -t.comboAmount;
         } else {
             key[i++] = 0;
         }
-        key[i++] = ManaFilterConsolidation.hasManaActivationCost(ma) ? 1 : 0;
+        key[i++] = t.hasManaActivationCost ? 1 : 0;
         key[i++] = producesShardMana(ma, shard) ? 0 : 1;
-        key[i++] = ManaSourceTraits.of(ma).manaScore;
+        key[i++] = t.manaScore;
         key[i++] = host == null ? 0 : host.getId();
         key[i++] = ma.getId();
         return key;
