@@ -286,6 +286,22 @@ final class ManaSourceTraits {
         }
     }
 
+    /**
+     * After activating {@code ma}, drop only that ability (and conflicting siblings) from the payment
+     * cache when the host remains; full rebuild when the host leaves the battlefield.
+     */
+    static void invalidateAfterActivation(final SpellAbility ma) {
+        final ManaPaymentContext.ManaPaymentPlanCache cache = ManaPaymentContext.ManaPaymentPlanCache.bound();
+        if (cache == null) {
+            return;
+        }
+        if (ManaPaymentContext.skipOptimizations()) {
+            cache.invalidateBoardMemos();
+        } else {
+            cache.invalidateActivatedAbility(ma);
+        }
+    }
+
     static boolean isCreatureTapType(final String type) {
         if (type == null) {
             return false;
