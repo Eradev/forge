@@ -182,6 +182,13 @@ public class FilesPage extends TabPage<SettingsScreen> {
                 Forge.openScreen(new CardImageBrowserScreen());
             }
         }, 2);
+        lstItems.addItem(new Extra(Forge.getLocalizer().getMessage("btnHalcyonPackages"),
+                Forge.getLocalizer().getMessage("lblHalcyonPackages")) {
+            @Override
+            public void select() {
+                Forge.openScreen(new HalcyonPackagesScreen());
+            }
+        }, 2);
         lstItems.addItem(new OptionContentDownloader(Forge.getLocalizer().getMessage("btnDownloadCJKFonts"),
                 Forge.getLocalizer().getMessage("lblDownloadCJKFonts"),
                 Forge.getLocalizer().getMessage("lblDownloadCJKFontPrompt")) {
