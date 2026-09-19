@@ -60,6 +60,7 @@
   - [Card Images](Card-Images.md)
   - [File Formats](File-Formats.md)
   - [Tutorial: creating your first custom set](Creating-a-custom-Set.md)
+  - [Halcyon package repositories](Halcyon-Package-Repositories.md)
   - [Fantasy Blocks](fantasy-blocks.md)
 
 - [Missing Cards in Forge](Missing-Cards-in-Forge.md)
