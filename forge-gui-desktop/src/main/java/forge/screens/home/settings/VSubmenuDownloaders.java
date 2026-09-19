@@ -64,6 +64,7 @@ public enum VSubmenuDownloaders implements IVSubmenu<CSubmenuDownloaders> {
     private final FLabel btnReportBug                 = _makeButton(localizer.getMessage("btnReportBug"));
     private final FLabel btnListImageData             = _makeButton(localizer.getMessage("btnListImageData"));
     private final FLabel btnImportPictures            = _makeButton(localizer.getMessage("btnImportPictures"));
+    private final FLabel btnHalcyonPackages           = _makeButton(localizer.getMessage("btnHalcyonPackages"));
     private final FLabel btnHowToPlay                 = _makeButton(localizer.getMessage("btnHowToPlay"));
     private final FLabel btnDownloadPrices            = _makeButton(localizer.getMessage("btnDownloadPrices"));
     private final FLabel btnDownloadSkins             = _makeButton(localizer.getMessage("btnDownloadSkins"));
@@ -116,6 +117,9 @@ public enum VSubmenuDownloaders implements IVSubmenu<CSubmenuDownloaders> {
         pnlContent.add(btnImportPictures, constraintsBTN);
         pnlContent.add(_makeLabel(localizer.getMessage("lblImportPictures")), constraintsLBL);
 
+        pnlContent.add(btnHalcyonPackages, constraintsBTN);
+        pnlContent.add(_makeLabel(localizer.getMessage("lblHalcyonPackages")), constraintsLBL);
+
         pnlContent.add(btnReportBug, constraintsBTN);
         pnlContent.add(_makeLabel(localizer.getMessage("lblReportBug")), constraintsLBL);
 
@@ -158,6 +162,7 @@ public enum VSubmenuDownloaders implements IVSubmenu<CSubmenuDownloaders> {
     public void setReportBugCommand(UiCommand command)                 { btnReportBug.setCommand(command);           }
     public void setListImageDataCommand(UiCommand command)             { btnListImageData.setCommand(command);       }
     public void setImportPicturesCommand(UiCommand command)            { btnImportPictures.setCommand(command);      }
+    public void setHalcyonPackagesCommand(UiCommand command)           { btnHalcyonPackages.setCommand(command);     }
     public void setHowToPlayCommand(UiCommand command)                 { btnHowToPlay.setCommand(command);           }
     public void setDownloadPricesCommand(UiCommand command)            { btnDownloadPrices.setCommand(command);      }
     public void setLicensingCommand(UiCommand command)                 { btnLicensing.setCommand(command);           }

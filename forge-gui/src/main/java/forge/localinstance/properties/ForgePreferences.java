@@ -353,6 +353,9 @@ public class ForgePreferences extends AbstractPreferences<ForgePreferences.FPref
 
         LAST_IMPORTED_CUBE_ID(""),
 
+        /** Newline-separated Halcyon package repository base URLs. */
+        HALCYON_REPO_URLS(""),
+
         ADV_DISPLAY_PRICE_IN_REWARD_SCREEN("true");
 
         private final String strDefaultVal;
