@@ -47,6 +47,7 @@ public enum CSubmenuDownloaders implements ICDoc {
     private final UiCommand cmdHowToPlay = VSubmenuDownloaders.SINGLETON_INSTANCE::showHowToPlay;
     private final UiCommand cmdListImageData = VSubmenuDownloaders.SINGLETON_INSTANCE::showCardandImageAuditData;
     private final UiCommand cmdImportPictures = () -> new ImportDialog(null, null).show();
+    private final UiCommand cmdHalcyonPackages = () -> new DialogHalcyonPackages().show();
     private final UiCommand cmdReportBug = () -> BugReporter.reportBug(null);
 
     @Override
@@ -69,6 +70,7 @@ public enum CSubmenuDownloaders implements ICDoc {
         view.setListImageDataCommand(cmdListImageData);
         view.setReportBugCommand(cmdReportBug);
         view.setImportPicturesCommand(cmdImportPictures);
+        view.setHalcyonPackagesCommand(cmdHalcyonPackages);
         view.setHowToPlayCommand(cmdHowToPlay);
         view.setDownloadPricesCommand(cmdDownloadPrices);
         view.setDownloadSkinsCommand(cmdDownloadSkins);
