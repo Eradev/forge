@@ -147,6 +147,13 @@ final class ManaAbilitySort {
         if (filterCostCmp != 0) {
             return filterCostCmp;
         }
+        final int combatCmp = Boolean.compare(ManaFilterConsolidation.isCombatCapableManaCreature(a),
+                ManaFilterConsolidation.isCombatCapableManaCreature(b));
+        if (combatCmp != 0) {
+            return combatCmp;
+        }
+        // Prefer rocks/artifacts over lands when ranks match (save colored basics); combat dorks
+        // already lost above so this no longer elevates Llanowar over Forest.
         final boolean land1 = a.getHostCard() != null && a.getHostCard().isLand();
         final boolean land2 = b.getHostCard() != null && b.getHostCard().isLand();
         if (land1 != land2) {
@@ -188,6 +195,10 @@ final class ManaAbilitySort {
         }
         if (t.manaReserveHost) {
             return 45;
+        }
+        // Tap-for-mana creatures that can still attack/block: after lands/rocks, before filters/Petal.
+        if (ManaFilterConsolidation.isCombatCapableManaCreature(ma)) {
+            return ManaFilterConsolidation.COMBAT_MANA_CREATURE_GENERIC_RANK;
         }
         if (t.producesOnlyColorless && !t.hasManaActivationCost) {
             if (pref == GenericColorPreference.PREFER_COLORLESS) {
@@ -461,7 +472,7 @@ final class ManaAbilitySort {
         final ManaSourceTraits t = ManaSourceTraits.of(ma);
         final boolean withHandPrefs = shard.isGeneric() && ctx.colorsMostCommon != null
                 && !ctx.colorsMostCommon.isEmpty();
-        final int[] key = new int[shard.isGeneric() ? (withHandPrefs ? 20 : 15) : 11];
+        final int[] key = new int[shard.isGeneric() ? (withHandPrefs ? 21 : 16) : 12];
         int i = 0;
         if (shard.isGeneric()) {
             key[i++] = (ctx.unpaidGeneric == 1 && ManaPaymentExecution.isTightGenericProducer(ma, 1)) ? 0 : 1;
@@ -502,6 +513,8 @@ final class ManaAbilitySort {
             }
             key[i++] = anyManaFilterCmcKey(ma);
         }
+        // Prefer lands/rocks over tap-mana creatures that can still attack or block.
+        key[i++] = ManaFilterConsolidation.isCombatCapableManaCreature(ma) ? 1 : 0;
         final Card host = ma.getHostCard();
         key[i++] = ctx.cardRank.getOrDefault(host, Integer.MAX_VALUE);
         if (ctx.cost.getUnpaidShards(shard) >= 2 || (shard.isGeneric() && ctx.unpaidGeneric >= 2)) {
