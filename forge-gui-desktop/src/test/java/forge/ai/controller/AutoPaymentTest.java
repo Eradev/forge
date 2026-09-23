@@ -315,6 +315,39 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals(0, countTapped(game, "Study Hall"));
     }
 
+    // Surplus colorless rocks cover Study Hall's {1} and the spell's {1}; prefer Study Hall for {W} over Petal.
+    @Test
+    public void studyHallBeatsLotusPetalForWhiteWhenSurplusColorlessRocks() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Study Hall", p);
+        addCard("Reliquary Tower", p);
+        addCard("Mox Emerald", p);
+        addCard("Mind Stone", p);
+        addCard("Thought Vessel", p);
+        addCard("Lotus Petal", p);
+        Card spell = addCardToZone("Disenchant", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("1 W");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Study Hall should pay {W}; actual sources: " + sources,
+                sources.anyMatch(c -> "Study Hall".equals(c.getName())));
+        AssertJUnit.assertFalse("Lotus Petal should stay in play when Study Hall can pay {W}",
+                sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1 W"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Study Hall"));
+        AssertJUnit.assertEquals("Lotus Petal should remain unsacrificed", 1,
+                game.getCardsIn(ZoneType.Battlefield).stream().filter(c -> "Lotus Petal".equals(c.getName())).count());
+    }
+
     @Test
     public void signetConsolidatesColoredShardsOverLotusPetal() {
         Game game = initAndCreateGame();
@@ -1119,6 +1152,64 @@ public class AutoPaymentTest extends SimulationTest {
         Card elfCopy = findCardWithName(simGame, "Llanowar Elves");
         AssertJUnit.assertNotNull(elfCopy);
         AssertJUnit.assertTrue(elfCopy.isTapped());
+    }
+
+    // Combat-ready dorks stay untapped when a land can pay the same pip.
+    @Test
+    public void preferLandOverCombatCapableManaCreature() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Forest", p);
+        Card elf = addCard("Llanowar Elves", p);
+        elf.setSickness(false);
+        Card spell = addCardToZone("Giant Growth", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("G");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Forest should pay {G}; actual sources: " + sources,
+                sources.anyMatch(c -> "Forest".equals(c.getName())));
+        AssertJUnit.assertFalse("Combat-ready Llanowar Elves should stay untapped",
+                sources.anyMatch(c -> "Llanowar Elves".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("G"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Forest"));
+        AssertJUnit.assertEquals(0, countTapped(game, "Llanowar Elves"));
+    }
+
+    // Colorless rock should pay generic before tapping a combat-ready mana creature.
+    @Test
+    public void preferColorlessRockOverCombatCapableManaCreatureForGeneric() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Mind Stone", p);
+        Card elf = addCard("Llanowar Elves", p);
+        elf.setSickness(false);
+        Card spell = addCardToZone("Bonesplitter", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("1");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Mind Stone should pay {1}; actual sources: " + sources,
+                sources.anyMatch(c -> "Mind Stone".equals(c.getName())));
+        AssertJUnit.assertFalse("Combat-ready Llanowar Elves should stay untapped",
+                sources.anyMatch(c -> "Llanowar Elves".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Mind Stone"));
+        AssertJUnit.assertEquals(0, countTapped(game, "Llanowar Elves"));
     }
 
     @Test

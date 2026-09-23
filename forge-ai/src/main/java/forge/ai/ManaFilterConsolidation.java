@@ -62,9 +62,54 @@ final class ManaFilterConsolidation {
      */
     static final int MANA_RESERVE_HOST_PENALTY = 45;
 
+    /** Per combat role (attack / block) on a tap-for-mana creature — lower host score is better. */
+    static final int COMBAT_MANA_CREATURE_ROLE_PENALTY = 13;
+
+    /**
+     * {@link ManaAbilitySort#rankGenericManaSource} band for tap-mana creatures that can still
+     * attack or block — after ordinary lands/rocks, before paid filters and disposables.
+     */
+    static final int COMBAT_MANA_CREATURE_GENERIC_RANK = 35;
+
     static boolean isManaReserveHost(final Card card) {
         return card != null && card.hasSVar("AIManaReserve")
                 && "True".equalsIgnoreCase(card.getSVar("AIManaReserve"));
+    }
+
+    /**
+     * Host-score penalty when tapping this creature for mana would forfeit attack and/or block.
+     * Multi-mana dorks (Bloom Tender, etc.) keep a reduced or zero penalty so their yield can win.
+     */
+    static int combatManaCreaturePenalty(final Card card, final int maxManaProduced) {
+        if (card == null || !card.isCreature()) {
+            return 0;
+        }
+        int combatPenalty = 0;
+        if (CombatUtil.canAttack(card)) {
+            combatPenalty += COMBAT_MANA_CREATURE_ROLE_PENALTY;
+        }
+        if (CombatUtil.canBlock(card)) {
+            combatPenalty += COMBAT_MANA_CREATURE_ROLE_PENALTY;
+        }
+        if (maxManaProduced >= 3) {
+            return 0;
+        }
+        if (maxManaProduced == 2) {
+            return combatPenalty / 2;
+        }
+        return combatPenalty;
+    }
+
+    /** True when activating this mana ability taps a creature that can still attack or block. */
+    static boolean isCombatCapableManaCreature(final SpellAbility ma) {
+        if (ma == null) {
+            return false;
+        }
+        final ManaSourceTraits t = ManaSourceTraits.of(ma);
+        if (!t.hasTapCost) {
+            return false;
+        }
+        return combatManaCreaturePenalty(ma.getHostCard(), t.producedAmount) > 0;
     }
 
     // All per-ability predicates below read from the memoized ManaSourceTraits snapshot.
@@ -195,21 +240,7 @@ final class ManaFilterConsolidation {
             }
         }
 
-        if (card.isCreature()) {
-            int combatPenalty = 0;
-            if (CombatUtil.canAttack(card)) {
-                combatPenalty += 13;
-            }
-            if (CombatUtil.canBlock(card)) {
-                combatPenalty += 13;
-            }
-            if (maxManaProduced >= 3) {
-                combatPenalty = 0;
-            } else if (maxManaProduced == 2) {
-                combatPenalty /= 2;
-            }
-            score += combatPenalty;
-        }
+        score += combatManaCreaturePenalty(card, maxManaProduced);
 
         if (hasManaCostAbility) {
             score += FILTER_SINGLE_SHARD_PENALTY;
