@@ -1141,38 +1141,19 @@ final class ManaPaymentExecution {
     }
 
     /**
-     * True when the filter's host also has a free colorless mana ability (Study Hall {@code {T}:{C}}) that
-     * can pay the spell's generic pips without the filter's paid activation.
-     */
-    static boolean hasFreeColorlessManaAbilityOnHost(final SpellAbility filter) {
-        final Card host = filter == null ? null : filter.getHostCard();
-        if (host == null) {
-            return false;
-        }
-        for (final SpellAbility ma : host.getManaAbilities()) {
-            if (ma == filter || !producesOnlyColorless(ma) || ManaFilterConsolidation.hasManaActivationCost(ma)) {
-                continue;
-            }
-            return true;
-        }
-        return false;
-    }
-
-    /**
      * True when paying this filter's activation would consume reusable generic mana sources needed
      * to pay the spell's own generic pips (e.g. one Plains cannot fund Study Hall's {@code {1}} and
      * the spell's {@code {1}}). {@code {1}} accepts any mana; {@code {C}} sources count too.
      *
-     * Also true when the host has a free {@code {C}} ability that should pay generic directly — using
-     * the filter's paid any-mana line for a colored pip taps the host and strands that path.
+     * The filter host's own free {@code {C}} (Study Hall) is excluded via sibling conflict — tapping
+     * for the paid any-mana line strands that path — so compete only when other reusable colorless
+     * sources cannot cover spell generic + activation. Surplus rocks (Mind Stone, Thought Vessel, …)
+     * let Study Hall pay a colored pip instead of burning a Lotus Petal.
      */
     static boolean filterActivationCompetesForSpellGeneric(final SpellAbility filter,
             final ManaCostBeingPaid cost, final Player ai, final ManaPaymentContext ctx) {
         if (cost.getGenericManaAmount() <= 0 || ai == null) {
             return false;
-        }
-        if (ManaFilterConsolidation.isAnyManaConsolidatingFilter(filter) && hasFreeColorlessManaAbilityOnHost(filter)) {
-            return true;
         }
         final CostPartMana costMana = filter.getPayCosts().getCostMana();
         if (costMana == null) {
@@ -1184,16 +1165,19 @@ final class ManaPaymentExecution {
         }
         final ListMultimap<Integer, SpellAbility> manaAbilityMap = ComputerUtilMana.getOrBuildManaAbilityMap(ai, true, ctx);
         final int needed = cost.getGenericManaAmount() + activationGeneric;
-        int reusableGenericSources = 0;
+        final HashSet<Card> countedHosts = new HashSet<>();
         for (final SpellAbility candidate : manaAbilityMap.get(ManaAtom.GENERIC)) {
-            if (isFreeReusableSourceForNestedActivation(candidate, filter)) {
-                reusableGenericSources++;
-                if (reusableGenericSources >= needed) {
-                    return false;
-                }
+            if (!isFreeReusableSourceForNestedActivation(candidate, filter)) {
+                continue;
+            }
+            if (!countedHosts.add(candidate.getHostCard())) {
+                continue;
+            }
+            if (countedHosts.size() >= needed) {
+                return false;
             }
         }
-        return reusableGenericSources < needed;
+        return countedHosts.size() < needed;
     }
 
     /** Free nested-activation source that is not a one-shot (Petal, Treasure, etc.). */
