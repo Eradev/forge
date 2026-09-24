@@ -1417,6 +1417,12 @@ final class ManaPaymentExecution {
         if (best == null) {
             return refreshExpressChoice(cost, sa, ai, toPay, valid.get(0));
         }
+        // Plain free winners (a basic, Sol Ring) are accepted from the free-source count.
+        // Castability's own impact runs under a filter probe, which skips stranding, so it cannot
+        // replace this check. Filters and other non-plain sources still get a full probe.
+        if (plainFreeWinnerKeepsRest(cost, sa, ai, toPay, best, ctx)) {
+            return refreshExpressChoice(cost, sa, ai, toPay, best);
+        }
         // Castability optimizes remaining hand castability; still require the rest of this cost payable.
         final PaymentImpact impact = probePaymentImpact(cost, sa, ai, toPay, best, valid, null, test, ctx);
         if (impact != null && impact.keepsRest) {
@@ -1774,12 +1780,46 @@ final class ManaPaymentExecution {
     }
 
     /**
+     * A castability winner that is a plain free producer keeps the rest of {@code cost} payable by the
+     * free-source count. Returns false when a full stranding probe is still required.
+     */
+    private static boolean plainFreeWinnerKeepsRest(final ManaCostBeingPaid cost, final SpellAbility sa,
+            final Player ai, final ManaCostShard toPay, final SpellAbility best, final ManaPaymentContext ctx) {
+        if (!isPlainFreeProducer(best)) {
+            return false;
+        }
+        try (ReservationSnapshot snap = ReservationSnapshot.take(ai)) {
+            if (!passesManaPaymentReservationChecks(ai, best, sa)) {
+                return false;
+            }
+            if (!hasRemainingCostAfterShard(cost, toPay)) {
+                return true;
+            }
+            final ManaCostBeingPaid remaining = new ManaCostBeingPaid(cost);
+            applyChosenPaymentToCostProbe(remaining, best, ai, toPay);
+            if (remaining.isPaid()) {
+                return true;
+            }
+            final Set<Card> consumed = new HashSet<>();
+            consumed.add(best.getHostCard());
+            if (!freeSourceCountsCover(remaining, consumed, ai, ctx)) {
+                return false;
+            }
+            ManaPaymentEvalStats.recordFreeSourceCoverHit();
+            return true;
+        }
+    }
+
+    /**
      * Cheap sufficiency check: can the unpaid pips of {@code remaining} be covered by free, unreserved
-     * sources whose hosts are not in {@code consumed}, counting one mana per host? Mono-colored and {C}
-     * pips are matched via Hall's condition over every subset of needed types; generic pips take whatever
-     * hosts are left. Returns {@code false} (defer to the full dry-run) for hybrid / Phyrexian / snow / X
-     * pips or when the counts fall short — never a false positive relative to single-mana producers, and
-     * multi-mana hosts only make it more conservative.
+     * sources whose hosts are not in {@code consumed}? Mono-colored and {C} pips are matched via Hall's
+     * condition over every subset of needed types; generic pips take whatever hosts are left. A plain
+     * free producer of N mana of one type contributes N (one via its host, the rest as surplus that can
+     * also pay generic). Paid filters are skipped — they are extra options, not obligations. Mixed-color
+     * and any-color sources still count as one host.
+     * <p>
+     * Returns {@code false} (defer to the full dry-run) for hybrid / Phyrexian / snow / X pips or when
+     * the counts fall short. Never a false positive relative to what those free producers can pay.
      */
     static boolean freeSourceCountsCover(final ManaCostBeingPaid remaining, final Set<Card> consumed,
             final Player ai, final ManaPaymentContext ctx) {
@@ -1813,11 +1853,13 @@ final class ManaPaymentExecution {
         final Set<Card> sacReserved = AiCardMemory.getMemorySet(ai, MemorySet.PAYS_SAC_COST);
         final Set<Card> held = AiCardMemory.getMemorySet(ai, MemorySet.HELD_MANA_SOURCES_FOR_NEXT_SPELL);
         final Map<Card, Integer> hostMasks = new IdentityHashMap<>();
+        final Map<Card, int[]> surplusByHost = new IdentityHashMap<>();
         for (final SpellAbility ma : ComputerUtilMana.getOrBuildUniqueManaAbilities(ai, true, ctx)) {
             final ManaSourceTraits traits = ManaSourceTraits.of(ma);
-            // Any activation-cost filter on the board: free-host counting can ignore filter fuel needs.
+            // Paid filters are extra ways to pay, not obligations. Skip them; if free hosts cannot
+            // cover the remaining pips the caller falls through to a full dry-run.
             if (traits.hasManaActivationCost) {
-                return false;
+                continue;
             }
             final Card host = ma.getHostCard();
             if (host == null || consumed.contains(host) || !isPlainFreeProducer(ma)) {
@@ -1839,11 +1881,37 @@ final class ManaPaymentExecution {
                 }
             }
             hostMasks.merge(host, mask, (a, b) -> a | b);
+            final int mono = monoProducedTypeIndex(traits);
+            if (mono >= 0) {
+                final int[] extra = surplusByHost.computeIfAbsent(host, h -> new int[6]);
+                extra[mono] = Math.max(extra[mono], traits.producedAmount - 1);
+            }
         }
 
+        final int[] surplus = new int[6];
+        for (final int[] extra : surplusByHost.values()) {
+            for (int i = 0; i < 6; i++) {
+                surplus[i] += extra[i];
+            }
+        }
+        int genericSurplus = 0;
+        for (int i = 0; i < 5; i++) {
+            final int use = Math.min(needs[i], surplus[i]);
+            needs[i] -= use;
+            genericSurplus += surplus[i] - use;
+        }
+        final int useColorless = Math.min(needs[5], surplus[5]);
+        needs[5] -= useColorless;
+        genericSurplus += surplus[5] - useColorless;
+        generic = Math.max(0, generic - genericSurplus);
+
+        neededTypesMask = 0;
         int coloredNeed = 0;
-        for (final int n : needs) {
-            coloredNeed += n;
+        for (int i = 0; i < 6; i++) {
+            if (needs[i] > 0) {
+                neededTypesMask |= 1 << i;
+                coloredNeed += needs[i];
+            }
         }
         if (hostMasks.size() < coloredNeed + generic) {
             return false;
@@ -1870,6 +1938,35 @@ final class ManaPaymentExecution {
     }
 
     private static final String[] COUNT_TYPES = {"W", "U", "B", "R", "G", "C"};
+
+    /**
+     * Index into {@link #COUNT_TYPES} when {@code traits} produces 2+ mana of that single type.
+     * Mixed-color, any-color, and one-mana sources return -1.
+     */
+    private static int monoProducedTypeIndex(final ManaSourceTraits traits) {
+        final String mana = traits.manaString;
+        if (mana == null || mana.isEmpty() || traits.producedAmount <= 1) {
+            return -1;
+        }
+        int idx = -1;
+        for (final String token : mana.split(" ")) {
+            if (token.isEmpty()) {
+                continue;
+            }
+            int found = -1;
+            for (int i = 0; i < COUNT_TYPES.length; i++) {
+                if (COUNT_TYPES[i].equals(token)) {
+                    found = i;
+                    break;
+                }
+            }
+            if (found < 0 || (idx >= 0 && found != idx)) {
+                return -1;
+            }
+            idx = found;
+        }
+        return idx;
+    }
 
     private static int colorIndex(final byte colorMask) {
         for (int i = 0; i < MagicColor.WUBRG.length; i++) {
