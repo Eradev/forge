@@ -315,6 +315,45 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals(0, countTapped(game, "Study Hall"));
     }
 
+    // One colorless rock cannot fund Study Hall's {1} and the spell's {1} while Plains is reserved for {W}.
+    @Test
+    public void studyHallNotUsedWhenOnlyRockWouldLeavePetalPayingGeneric() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Plains", p);
+        addCard("Reliquary Tower", p);
+        addCard("Study Hall", p);
+        addCard("Lotus Petal", p);
+        Card spell = addCardToZone("Calix, Guided by Fate", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("1 W G");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Plains should pay {W}; actual sources: " + sources,
+                sources.anyMatch(c -> "Plains".equals(c.getName())));
+        AssertJUnit.assertTrue("Lotus Petal should pay {G}",
+                sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
+        AssertJUnit.assertTrue("Reliquary Tower or Study Hall {C} should pay {1}",
+                sources.anyMatch(c -> "Reliquary Tower".equals(c.getName())
+                        || "Study Hall".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1 W G"), sa));
+        AssertJUnit.assertEquals("Lotus Petal should be sacrificed for {G}", 0,
+                game.getCardsIn(ZoneType.Battlefield).stream().filter(c -> "Lotus Petal".equals(c.getName())).count());
+        AssertJUnit.assertEquals(1, countTapped(game, "Plains"));
+        // Study Hall may tap for free {C} toward {1}, but must not use Reliquary Tower as filter fuel.
+        AssertJUnit.assertFalse("Must not tap both Study Hall and Reliquary Tower (paid any-mana line)",
+                countTapped(game, "Study Hall") == 1 && countTapped(game, "Reliquary Tower") == 1);
+        AssertJUnit.assertTrue("Exactly one of Study Hall {C} or Reliquary Tower pays {1}",
+                countTapped(game, "Study Hall") + countTapped(game, "Reliquary Tower") == 1);
+    }
+
     // Surplus colorless rocks cover Study Hall's {1} and the spell's {1}; prefer Study Hall for {W} over Petal.
     @Test
     public void studyHallBeatsLotusPetalForWhiteWhenSurplusColorlessRocks() {
@@ -988,6 +1027,39 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals(1, countTapped(game, "Graven Cairns"));
         AssertJUnit.assertEquals(1, countTapped(game, "Study Hall"));
         AssertJUnit.assertEquals("Lotus Petal should be sacrificed", 0,
+                game.getCardsIn(ZoneType.Battlefield).stream().filter(c -> "Lotus Petal".equals(c.getName())).count());
+    }
+
+    // {2} with Study Hall + Graven Cairns: tap both for {C}, do not Petal-activate Cairns for {B}{B}.
+    @Test
+    public void freeColorlessTapsBeatPetalActivatedGravenCairnsForGenericTwo() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Lotus Petal", p);
+        addCard("Graven Cairns", p);
+        addCard("Study Hall", p);
+        Card spell = addCardToZone("Arcane Signet", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("2");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Study Hall should pay one {1}; actual sources: " + sources,
+                sources.anyMatch(c -> "Study Hall".equals(c.getName())));
+        AssertJUnit.assertTrue("Graven Cairns should pay one {1}",
+                sources.anyMatch(c -> "Graven Cairns".equals(c.getName())));
+        AssertJUnit.assertFalse("Lotus Petal should stay in play",
+                sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("2"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Study Hall"));
+        AssertJUnit.assertEquals(1, countTapped(game, "Graven Cairns"));
+        AssertJUnit.assertEquals("Lotus Petal should remain unsacrificed", 1,
                 game.getCardsIn(ZoneType.Battlefield).stream().filter(c -> "Lotus Petal".equals(c.getName())).count());
     }
 
