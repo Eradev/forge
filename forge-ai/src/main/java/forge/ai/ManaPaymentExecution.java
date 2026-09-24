@@ -971,7 +971,7 @@ final class ManaPaymentExecution {
             final ManaCostBeingPaid cost, final ManaCostShard payingShard, final Player ai,
             final ListMultimap<Integer, SpellAbility> manaAbilityMap, final ManaPaymentContext ctx) {
         return canActivateFilter(ai, filter, manaAbilityMap, true)
-                && !filterActivationCompetesForSpellGeneric(filter, cost, ai, ctx)
+                && !filterActivationCompetesForSpellGeneric(filter, cost, payingShard, ai, ctx)
                 && !filterActivationStealsDedicatedColoredProducers(filter, cost, payingShard, ai, ctx)
                 // Filter must actually save the disposable: remaining colored pips still coverable
                 // by reusables after the activation consumes a surplus land (Plains fueling Study Hall
@@ -1149,9 +1149,14 @@ final class ManaPaymentExecution {
      * for the paid any-mana line strands that path — so compete only when other reusable colorless
      * sources cannot cover spell generic + activation. Surplus rocks (Mind Stone, Thought Vessel, …)
      * let Study Hall pay a colored pip instead of burning a Lotus Petal.
+     * <p>
+     * Sources that are the sole reusable cover for another unpaid colored pip (e.g. the only Plains
+     * for {@code {W}} while Study Hall would pay {@code {G}}) do not count as surplus — otherwise
+     * Study Hall looks funded, burns the rock on activation, and still spends Petal on spell generic.
      */
     static boolean filterActivationCompetesForSpellGeneric(final SpellAbility filter,
-            final ManaCostBeingPaid cost, final Player ai, final ManaPaymentContext ctx) {
+            final ManaCostBeingPaid cost, final ManaCostShard payingShard, final Player ai,
+            final ManaPaymentContext ctx) {
         if (cost.getGenericManaAmount() <= 0 || ai == null) {
             return false;
         }
@@ -1165,14 +1170,21 @@ final class ManaPaymentExecution {
         }
         final ListMultimap<Integer, SpellAbility> manaAbilityMap = ComputerUtilMana.getOrBuildManaAbilityMap(ai, true, ctx);
         final int needed = cost.getGenericManaAmount() + activationGeneric;
+        // Unique hosts: multiple free abilities on one rock must not inflate the cover count.
         final HashSet<Card> countedHosts = new HashSet<>();
         for (final SpellAbility candidate : manaAbilityMap.get(ManaAtom.GENERIC)) {
-            if (!isFreeReusableSourceForNestedActivation(candidate, filter)) {
+            if (!isFreeReusableSourceForNestedActivation(candidate, filter)
+                    || !isCurrentlyAvailableForNestedActivation(ai, candidate, filter)) {
                 continue;
             }
-            if (!countedHosts.add(candidate.getHostCard())) {
+            final Card host = candidate.getHostCard();
+            if (host == null || countedHosts.contains(host)) {
                 continue;
             }
+            if (isDedicatedProducerForOtherUnpaidColoredShard(candidate, cost, payingShard, manaAbilityMap, ai)) {
+                continue;
+            }
+            countedHosts.add(host);
             if (countedHosts.size() >= needed) {
                 return false;
             }
@@ -2979,6 +2991,13 @@ final class ManaPaymentExecution {
             final List<SpellAbility> paymentList, final ManaPaymentContext ctx) {
         if (countUnpaidPips(cost) < 2 || sourcesForShards == null
                 || (ctx != null && !ctx.caches.boardHasNetPositiveConsolidator(ai))) {
+            return false;
+        }
+        // Pure generic/colorless: prefer free taps (Study Hall {C} + Graven Cairns {C} for {2}) over
+        // burning a Lotus Petal to activate a net-positive combo land for the same pips.
+        if (!hasUnpaidColoredShards(cost)
+                && freeGenericSourcesCover(countUnpaidPips(cost),
+                        ManaFilterConsolidation::isDisposableManaCard, ai, ctx)) {
             return false;
         }
         final Set<SpellAbility> seen = Collections.newSetFromMap(new IdentityHashMap<>());
