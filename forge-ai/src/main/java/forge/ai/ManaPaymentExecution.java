@@ -579,8 +579,19 @@ final class ManaPaymentExecution {
         final AlternativeScanFlags altFlags = (altScan != null ? altScan
                 : AlternativeScan.of(alternatives, toPay, remaining)).excluding(chosen);
         if (t.disposable) {
-            if (altFlags.hasMultiShardAlt || !disposableIsReasonableForShard(chosen, cost, toPay, alternatives, ai, ctx)) {
+            if (altFlags.hasMultiShardAlt || altFlags.hasDirectColoredAlt
+                    || !disposableIsReasonableForShard(chosen, cost, toPay, alternatives, ai, ctx)) {
                 score += 100;
+            }
+        }
+        // Black Lotus / multi-mana one-shots: paying N pips with one sac looks "cheap" by consumedCount
+        // but must lose to reusable lands/rocks (Badlands, Mana Crypt) that cover the same cost.
+        if (t.multiManaDisposable) {
+            if (altFlags.hasDirectColoredAlt || altFlags.hasSinglePipDirectColoredAlt
+                    || altFlags.hasMultiManaAlt || altFlags.hasTightGenericAlt) {
+                score += 100;
+            } else {
+                score += 50;
             }
         }
         if (t.sacrificesOther && altFlags.hasSelfSacDisposableAlt) {
@@ -647,7 +658,16 @@ final class ManaPaymentExecution {
         if (filterAlts.stream().anyMatch(ma -> consolidatorBeatsDisposable(ma, cost, toPay, ai, manaAbilityMap, ctx))) {
             return false;
         }
-        return cost.getGenericManaAmount() > 0 || otherColoredShardsCovered;
+        // Reasonable only when this colored pip has no reusable cover and either the rest of the
+        // colored cost is covered, or this disposable is the sole candidate for the pip (Black Lotus
+        // for {R} when the board is only Swamps). Never treat "generic still unpaid" alone as enough —
+        // that burned Lotus on {2}{B}{B} whenever Mana Crypt could cover {2}.
+        if (otherColoredShardsCovered) {
+            return true;
+        }
+        return !hasAlternativeExcept(alternatives, disposable,
+                ma -> isReusableFreeManaForShard(ma, toPay)
+                        || (ma != disposable && isFreeDisposableForShard(ma, toPay)));
     }
 
     static List<SpellAbility> consolidatingFilterAlternatives(final List<SpellAbility> alternatives,
@@ -1550,8 +1570,8 @@ final class ManaPaymentExecution {
             }
             final int efficiency = impact.efficiencyScore();
             if (efficiency < bestEfficiency
-                    || (efficiency == bestEfficiency && best != null && genericShard
-                            && ManaAbilitySort.compareGenericCandidatesForPayment(cand, best, pref, unpaidGeneric, sa, ai) < 0)) {
+                    || (efficiency == bestEfficiency && best != null && preferCandOverBestOnTie(
+                            cand, best, genericShard, pref, unpaidGeneric, sa, ai))) {
                 bestEfficiency = efficiency;
                 best = cand;
             }
@@ -1564,6 +1584,22 @@ final class ManaPaymentExecution {
             return refreshExpressChoice(cost, sa, ai, toPay, consolidator);
         }
         return first == null ? null : refreshExpressChoice(cost, sa, ai, toPay, first);
+    }
+
+    /**
+     * Tie-break when two candidates share an efficiency score: prefer non-disposables (save Black Lotus /
+     * Petal), then for generic shards the usual colorless/rock ranking.
+     */
+    static boolean preferCandOverBestOnTie(final SpellAbility cand, final SpellAbility best,
+            final boolean genericShard, final ManaAbilitySort.GenericColorPreference pref,
+            final int unpaidGeneric, final SpellAbility sa, final Player ai) {
+        final boolean candDisp = ManaFilterConsolidation.isDisposableManaAbility(cand);
+        final boolean bestDisp = ManaFilterConsolidation.isDisposableManaAbility(best);
+        if (candDisp != bestDisp) {
+            return bestDisp; // prefer the non-disposable
+        }
+        return genericShard && pref != null
+                && ManaAbilitySort.compareGenericCandidatesForPayment(cand, best, pref, unpaidGeneric, sa, ai) < 0;
     }
 
     /**
@@ -1713,6 +1749,8 @@ final class ManaPaymentExecution {
         if (consumed == null) {
             return new PaymentImpact(false, Integer.MAX_VALUE, chosen, cost, toPay, alternatives, altScan, ai, sa, ctx);
         }
+        // Any/combo producers need an express choice before predictMana / stranding probes (Black Lotus).
+        refreshExpressChoice(cost, sa, ai, toPay, chosen);
         final int consumedCount = effectiveCardsConsumedForPayment(cost, sa, ai, toPay, chosen, consumed);
         if (!hasRemainingCostAfterShard(cost, toPay)) {
             return new PaymentImpact(true, consumedCount, chosen, cost, toPay, alternatives, altScan, ai, sa, ctx);
@@ -3656,8 +3694,13 @@ final class ManaPaymentExecution {
 
             if (saPayment != null && "BlackLotus".equals(saPayment.getParam("AILogic"))
                     && !SpecialCardAi.BlackLotus.consider(ai, sa, cost)) {
-                saExcludeList.add(saPayment);
-                continue;
+                // Never exclude the sole remaining source for this shard (e.g. {2}{R} with only Swamps
+                // + Lotus): refusing here empties the candidate list and fails the payment.
+                final boolean soleForShard = saList == null || saList.stream().noneMatch(ma -> ma != saPayment);
+                if (!soleForShard) {
+                    saExcludeList.add(saPayment);
+                    continue;
+                }
             }
 
             if (saPayment == null) {
