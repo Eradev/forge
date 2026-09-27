@@ -23,6 +23,7 @@ import forge.ai.ability.FightAi;
 import forge.card.ColorSet;
 import forge.card.MagicColor;
 import forge.card.mana.ManaCost;
+import forge.card.mana.ManaCostShard;
 import forge.game.Game;
 import forge.game.GameEntity;
 import forge.game.GameType;
@@ -40,6 +41,7 @@ import forge.game.phase.PhaseType;
 import forge.game.player.Player;
 import forge.game.player.PlayerCollection;
 import forge.game.player.PlayerPredicates;
+import forge.game.spellability.AbilityManaPart;
 import forge.game.spellability.SpellAbility;
 import forge.game.spellability.SpellAbilityPredicates;
 import forge.game.spellability.SpellPermanent;
@@ -124,8 +126,15 @@ public class SpecialCardAi {
     // Black Lotus and Lotus Bloom
     public static class BlackLotus {
         public static boolean consider(final Player ai, final SpellAbility sa, final ManaCostBeingPaid cost) {
+            final Card lotus = sa.getHostCard();
+            // Always allow when some unpaid colored pip has no other producer (e.g. {2}{R} with only
+            // Swamps + Lotus — refusing here excludes Lotus and fails the payment).
+            if (isSoleProducerForUnpaidColoredPip(ai, lotus, cost)) {
+                return true;
+            }
+
             CardCollection manaSources = ComputerUtilMana.getAvailableManaSources(ai, true);
-            int numManaSrcs = manaSources.size();
+            int numManaSrcs = CardLists.filter(manaSources, c -> c != lotus).size();
 
             CardCollection allCards = CardLists.filter(ai.getAllCards(), Arrays.asList(CardPredicates.NON_TOKEN,
                     CardPredicates.NON_LANDS, CardPredicates.isOwner(ai)));
@@ -142,7 +151,50 @@ public class SpecialCardAi {
                 return paidCMC == 3 && numManaSrcs < 3;
             }
 
+            // Enough other sources that the rest of the board can likely pay without burning the Lotus.
+            if (numManaSrcs >= paidCMC) {
+                return false;
+            }
+
             return true;
+        }
+
+        /** True when an unpaid colored shard of {@code cost} cannot be produced by any non-{@code lotus} source. */
+        private static boolean isSoleProducerForUnpaidColoredPip(final Player ai, final Card lotus,
+                final ManaCostBeingPaid cost) {
+            if (ai == null || cost == null) {
+                return false;
+            }
+            for (final ManaCostShard shard : cost.getDistinctShards()) {
+                if (shard.isGeneric() || shard == ManaCostShard.COLORLESS || shard.isPhyrexian()
+                        || cost.getUnpaidShards(shard) <= 0) {
+                    continue;
+                }
+                if (!otherSourceCanProduceShard(ai, lotus, shard)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static boolean otherSourceCanProduceShard(final Player ai, final Card lotus,
+                final ManaCostShard shard) {
+            final String want = shard.toShortString();
+            for (final Card c : ai.getCardsIn(ZoneType.Battlefield)) {
+                if (c == lotus || c.isTapped()) {
+                    continue;
+                }
+                for (final SpellAbility ma : ComputerUtilMana.getAIPlayableMana(c)) {
+                    if (ma.getHostCard() != c) {
+                        continue;
+                    }
+                    final AbilityManaPart mp = ma.getManaPart();
+                    if (mp != null && (mp.isAnyMana() || mp.canProduce(want, ma))) {
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
     }
 
