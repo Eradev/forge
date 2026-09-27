@@ -5,6 +5,7 @@ import forge.ai.CastabilityProbe;
 import forge.ai.ComputerUtilMana;
 import forge.ai.ManaPaymentEvalStats;
 import forge.ai.PlayerControllerAi;
+import forge.ai.SpecialCardAi;
 import forge.ai.simulation.GameSimulator;
 import forge.ai.simulation.Plan;
 import forge.ai.simulation.SimulationTest;
@@ -1692,6 +1693,77 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1"), sa));
         AssertJUnit.assertEquals(1, countTapped(game, "Reliquary Tower"));
         AssertJUnit.assertEquals(0, countTapped(game, "Plains"));
+    }
+
+    // {2}{B}{B}: Mana Crypt + Badlands + Study Hall/Tower beat sacrificing Black Lotus.
+    @Test
+    public void reusableSourcesBeatBlackLotusForTwoBlackTwoGeneric() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Black Lotus", p);
+        addCard("Mana Crypt", p);
+        addCard("Badlands", p);
+        addCard("Study Hall", p);
+        addCard("Reliquary Tower", p);
+        Card spell = addCardToZone("Damnation", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("2 B B");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertFalse("Black Lotus should stay in play; actual sources: " + sources,
+                sources.anyMatch(c -> "Black Lotus".equals(c.getName())));
+        AssertJUnit.assertTrue("Mana Crypt should pay {2}",
+                sources.anyMatch(c -> "Mana Crypt".equals(c.getName())));
+        AssertJUnit.assertTrue("Badlands should pay one {B}",
+                sources.anyMatch(c -> "Badlands".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("2 B B"), sa));
+        AssertJUnit.assertEquals("Black Lotus should remain unsacrificed", 1,
+                game.getCardsIn(ZoneType.Battlefield).stream().filter(c -> "Black Lotus".equals(c.getName())).count());
+        AssertJUnit.assertEquals(1, countTapped(game, "Mana Crypt"));
+        AssertJUnit.assertEquals(1, countTapped(game, "Badlands"));
+    }
+
+    // Black Lotus must still pay {R} when it is the only red source (refuse-when-abundant must not strand).
+    @Test
+    public void blackLotusPaysRedWhenOnlyRedSource() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card lotus = addCard("Black Lotus", p);
+        addCards("Swamp", 2, p);
+        Card spell = addCardToZone("Shock", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+
+        final boolean[] consider = new boolean[1];
+        p.runWithController(() -> {
+            final SpellAbility lotusMana = lotus.getManaAbilities().isEmpty() ? null : lotus.getManaAbilities().get(0);
+            consider[0] = lotusMana != null
+                    && SpecialCardAi.BlackLotus.consider(p, lotusMana, cost("2 R"));
+        }, new PlayerControllerAi(game, p, p.getOriginalLobbyPlayer()));
+        AssertJUnit.assertTrue("BlackLotus.consider should allow when Lotus is sole {R} source", consider[0]);
+
+        AssertJUnit.assertTrue("Lotus must be allowed to pay {R}; board cannot otherwise",
+                canAutoPay(game, p, cost("2 R"), sa));
+
+        CardCollection sources = predictedManaSources(game, p, cost("2 R"), sa);
+        AssertJUnit.assertNotNull("Payment plan should succeed", sources);
+        AssertJUnit.assertTrue("Black Lotus should pay {R}; actual sources: " + sources,
+                sources.anyMatch(c -> "Black Lotus".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("2 R"), sa));
+        AssertJUnit.assertEquals("Black Lotus should be sacrificed", 0,
+                game.getCardsIn(ZoneType.Battlefield).stream().filter(c -> "Black Lotus".equals(c.getName())).count());
     }
 
     /**
