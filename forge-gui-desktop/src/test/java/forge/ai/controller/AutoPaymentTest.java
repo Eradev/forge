@@ -388,6 +388,42 @@ public class AutoPaymentTest extends SimulationTest {
                 game.getCardsIn(ZoneType.Battlefield).stream().filter(c -> "Lotus Petal".equals(c.getName())).count());
     }
 
+    // Mana Crypt's {C}{C} alone funds Study Hall's {1} and the spell's {1}; Mountain pays {R}.
+    // Must not burn Lotus Petal for {G} just because Crypt is a single host.
+    @Test
+    public void manaCryptFundsStudyHallAndSpellGenericOverLotusPetal() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Mana Crypt", p);
+        addCard("Study Hall", p);
+        addCard("Mountain", p);
+        addCard("Lotus Petal", p);
+        Card spell = addCardToZone("Radha, Heart of Keld", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("1 R G");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Study Hall should pay {G}; actual sources: " + sources,
+                sources.anyMatch(c -> "Study Hall".equals(c.getName())));
+        AssertJUnit.assertTrue("Mana Crypt should fund activation/generic; actual sources: " + sources,
+                sources.anyMatch(c -> "Mana Crypt".equals(c.getName())));
+        AssertJUnit.assertFalse("Lotus Petal should stay in play when Crypt + Study Hall cover {G}",
+                sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1 R G"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Study Hall"));
+        AssertJUnit.assertEquals(1, countTapped(game, "Mana Crypt"));
+        AssertJUnit.assertEquals(1, countTapped(game, "Mountain"));
+        AssertJUnit.assertEquals("Lotus Petal should remain unsacrificed", 1,
+                game.getCardsIn(ZoneType.Battlefield).stream().filter(c -> "Lotus Petal".equals(c.getName())).count());
+    }
+
     @Test
     public void signetConsolidatesColoredShardsOverLotusPetal() {
         Game game = initAndCreateGame();
