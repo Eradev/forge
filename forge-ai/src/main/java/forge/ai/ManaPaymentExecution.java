@@ -173,18 +173,28 @@ final class ManaPaymentExecution {
     }
 
     /**
-     * True when a free (no mana activation cost), reusable ability natively produces this colored shard
-     * (e.g. Plains for {W}, Forest for {G}). Excludes any-mana and one-shot sources.
+     * True when a free (no mana activation cost), reusable ability can pay this colored shard without a
+     * nested activation: dedicated lands (Forest), combo duals (Rootbound Crag), and free any-mana rocks
+     * (Mox Krismite, Meteorite). Paid filters and one-shots stay out. Basics still beat free any-mana via
+     * {@code manaScore}; combat dorks lose to both via the combat sort key / efficiency penalty.
      */
     static boolean producesShardDirectly(final SpellAbility ma, final ManaCostShard shard) {
         if (ma == null || shard.isGeneric() || shard == ManaCostShard.COLORLESS || shard.isPhyrexian()) {
             return false;
         }
         final ManaSourceTraits t = ManaSourceTraits.of(ma);
-        if (t.disposable || t.hasManaActivationCost || t.manaString == null) {
+        if (t.disposable || t.hasManaActivationCost) {
             return false;
         }
-        return t.manaString.contains(shard.toShortString());
+        if (t.manaString != null) {
+            return t.manaString.contains(shard.toShortString());
+        }
+        // Free any-mana / combo: manaString is null in traits; canProduce covers both.
+        if (t.anyMana || t.comboMana) {
+            final AbilityManaPart mp = ma.getManaPart();
+            return mp != null && mp.canProduce(shard.toShortString(), ma);
+        }
+        return false;
     }
 
     /** Dedicated 1-mana producer for this colored shard (Forest for {G}, etc.). */
@@ -423,7 +433,11 @@ final class ManaPaymentExecution {
         private static final int ANY_MULTI = 7;
         private static final int REUSABLE_NON_CREATURE_TAP = 8;
         private static final int REUSABLE_UNTAPPING = 9;
-        private static final int PROPERTIES = 10;
+        /** Free tap producer without life/pain/discard side effects (basics, duals' free modes, rocks). */
+        private static final int FREE_REUSABLE = 10;
+        /** FREE_REUSABLE excluding AIManaReserve hosts (Karakas) — used for combat soft-penalty only. */
+        private static final int ORDINARY_FREE_REUSABLE = 11;
+        private static final int PROPERTIES = 12;
 
         private final ManaCostShard toPay;
         private final int remaining;
@@ -477,6 +491,13 @@ final class ManaPaymentExecution {
             out[ANY_MULTI] = t.anyMultiManaProducer;
             out[REUSABLE_NON_CREATURE_TAP] = !t.disposable && !t.requiresTappingOtherCreature;
             out[REUSABLE_UNTAPPING] = out[REUSABLE_NON_CREATURE_TAP] && !t.doesNotUntapNormally;
+            // Free reusable: no sac/life/pain/discard, no mana activation cost, and useful for this shard.
+            out[FREE_REUSABLE] = !t.disposable && !t.hasCostlySideEffect && !t.hasManaActivationCost
+                    && !t.sacrificesOther && !t.doesNotUntapNormally
+                    && (out[DIRECT_COLORED] || ((toPay.isGeneric() || toPay == ManaCostShard.X
+                            || toPay == ManaCostShard.COLORLESS) && t.producedAmount >= 1));
+            // Ordinary free reusable: same, but not AIManaReserve (Karakas must not trigger combat +40).
+            out[ORDINARY_FREE_REUSABLE] = out[FREE_REUSABLE] && !t.manaReserveHost;
         }
 
         /** Flags for the alternatives other than {@code skip}; {@code skip} must be a member of the scanned list. */
@@ -494,6 +515,8 @@ final class ManaPaymentExecution {
             flags.hasAnyMultiAlt = others(ANY_MULTI, own);
             flags.hasReusableNonCreatureTapAlt = others(REUSABLE_NON_CREATURE_TAP, own);
             flags.hasReusableUntappingAlt = others(REUSABLE_UNTAPPING, own);
+            flags.hasFreeReusableAlt = others(FREE_REUSABLE, own);
+            flags.hasOrdinaryFreeReusableAlt = others(ORDINARY_FREE_REUSABLE, own);
             final ManaSourceTraits t = ManaSourceTraits.of(skip);
             if (t.anyManaFilter) {
                 final int minOthers = t.activationCMC == minAnyFilterCmc && minAnyFilterCmcCount == 1
@@ -521,6 +544,10 @@ final class ManaPaymentExecution {
         boolean hasReusableNonCreatureTapAlt;
         boolean hasReusableUntappingAlt;
         boolean hasCheaperAnyManaFilterAlt;
+        /** Another free reusable producer (no life/pain/discard) covers this shard. */
+        boolean hasFreeReusableAlt;
+        /** Free reusable that is not AIManaReserve — for combat efficiency soft-penalty only. */
+        boolean hasOrdinaryFreeReusableAlt;
     }
 
     /** Cheap monotone key that changes whenever any shard of {@code cost} is paid (progress detection). */
@@ -602,6 +629,15 @@ final class ManaPaymentExecution {
         }
         if (t.doesNotUntapNormally && altFlags.hasReusableUntappingAlt) {
             score += 60;
+        }
+        // Prefer free basics/rocks over PayLife, pain (Ancient Tomb / City of Brass), or discard outlets.
+        if (t.hasCostlySideEffect && altFlags.hasFreeReusableAlt) {
+            score += 55;
+        }
+        // Prefer duals/basics/rocks over tapping a combat-ready mana dork / activatable manland.
+        // AIManaReserve alone must not trigger this (Karakas vs animated Mutavault).
+        if (ManaFilterConsolidation.isCombatCapableManaCreature(chosen) && altFlags.hasOrdinaryFreeReusableAlt) {
+            score += 40;
         }
         if (t.netNegativeAnyManaFilterLoss > 0 && altFlags.hasCheaperAnyManaFilterAlt) {
             score += 25 * t.netNegativeAnyManaFilterLoss;
@@ -1588,7 +1624,8 @@ final class ManaPaymentExecution {
 
     /**
      * Tie-break when two candidates share an efficiency score: prefer non-disposables (save Black Lotus /
-     * Petal), then for generic shards the usual colorless/rock ranking.
+     * Petal), then non-AIManaReserve over reserve (animated Mutavault over Karakas), then non-combat
+     * over combat mana dorks, then for generic shards the usual colorless/rock ranking.
      */
     static boolean preferCandOverBestOnTie(final SpellAbility cand, final SpellAbility best,
             final boolean genericShard, final ManaAbilitySort.GenericColorPreference pref,
@@ -1597,6 +1634,16 @@ final class ManaPaymentExecution {
         final boolean bestDisp = ManaFilterConsolidation.isDisposableManaAbility(best);
         if (candDisp != bestDisp) {
             return bestDisp; // prefer the non-disposable
+        }
+        final boolean candReserve = ManaSourceTraits.of(cand).manaReserveHost;
+        final boolean bestReserve = ManaSourceTraits.of(best).manaReserveHost;
+        if (candReserve != bestReserve) {
+            return bestReserve; // prefer non-reserve (manland/ordinary land over Karakas)
+        }
+        final boolean candCombat = ManaFilterConsolidation.isCombatCapableManaCreature(cand);
+        final boolean bestCombat = ManaFilterConsolidation.isCombatCapableManaCreature(best);
+        if (candCombat != bestCombat) {
+            return bestCombat; // prefer the non-combat source (land/rock over dork)
         }
         return genericShard && pref != null
                 && ManaAbilitySort.compareGenericCandidatesForPayment(cand, best, pref, unpaidGeneric, sa, ai) < 0;

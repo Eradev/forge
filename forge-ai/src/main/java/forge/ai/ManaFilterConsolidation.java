@@ -2,12 +2,15 @@ package forge.ai;
 
 import com.google.common.collect.ListMultimap;
 import forge.card.mana.ManaCostShard;
+import forge.game.ability.ApiType;
 import forge.game.card.Card;
 import forge.game.combat.CombatUtil;
+import forge.game.cost.CostPayment;
 import forge.game.mana.ManaCostBeingPaid;
 import forge.game.player.Player;
 import forge.game.spellability.SpellAbility;
 
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -47,6 +50,12 @@ final class ManaFilterConsolidation {
     /** Outlets like Ashnod's Altar that sacrifice another permanent — below self-sac disposables. */
     static final int EXTERNAL_SACRIFICE_MANA_PENALTY = 15;
 
+    /**
+     * PayLife / self-damage / discard-or-exile mana (Mana Confluence, Ancient Tomb, City of Brass, Bog Witch)
+     * so free basics and rocks are preferred when both can cover the same pip.
+     */
+    static final int COSTLY_SIDE_EFFECT_MANA_PENALTY = 12;
+
     /** Self-sac creature mana (Treva's Attendant) — above external-sac outlets, below tokens/Petal. */
     static final int SELF_SAC_CREATURE_MANA_PENALTY = 12;
 
@@ -77,6 +86,12 @@ final class ManaFilterConsolidation {
     }
 
     /**
+     * Guard against recursion when {@link #hasActivatableSelfAnimate} probes mana payability for an
+     * animate cost (that probe re-enters combat-capable checks on other sources).
+     */
+    private static final ThreadLocal<Boolean> CHECKING_SELF_ANIMATE = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    /**
      * Host-score penalty when tapping this creature for mana would forfeit attack and/or block.
      * Multi-mana dorks (Bloom Tender, etc.) keep a reduced or zero penalty so their yield can win.
      */
@@ -100,7 +115,12 @@ final class ManaFilterConsolidation {
         return combatPenalty;
     }
 
-    /** True when activating this mana ability taps a creature that can still attack or block. */
+    /**
+     * True when activating this mana ability should be soft-penalized vs ordinary lands/rocks.
+     * Non-land dorks: can still attack/block. Lands: only manlands with a self-animate that is
+     * currently activatable, or already a combat-capable creature with a self-animate SA
+     * (expensive/unpayable animate → treat as an ordinary mana land).
+     */
     static boolean isCombatCapableManaCreature(final SpellAbility ma) {
         if (ma == null) {
             return false;
@@ -109,7 +129,96 @@ final class ManaFilterConsolidation {
         if (!t.hasTapCost) {
             return false;
         }
-        return combatManaCreaturePenalty(ma.getHostCard(), t.producedAmount) > 0;
+        final Card host = ma.getHostCard();
+        if (host == null) {
+            return false;
+        }
+        final Player activator = ma.getActivatingPlayer() != null ? ma.getActivatingPlayer() : host.getController();
+        if (host.isLand()) {
+            if (CHECKING_SELF_ANIMATE.get()) {
+                return false;
+            }
+            if (!hasSelfAnimateAbility(host)) {
+                return false;
+            }
+            if (hasActivatableSelfAnimate(host, activator)) {
+                return true;
+            }
+            return combatManaCreaturePenalty(host, t.producedAmount) > 0;
+        }
+        return combatManaCreaturePenalty(host, t.producedAmount) > 0;
+    }
+
+    /** Manland-style self-animate (Mutavault, Faerie Conclave), not external animation. */
+    static boolean hasSelfAnimateAbility(final Card host) {
+        if (host == null) {
+            return false;
+        }
+        for (final SpellAbility ab : host.getNonManaAbilities()) {
+            if (isSelfAnimateAbility(ab, host)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static boolean isSelfAnimateAbility(final SpellAbility ab, final Card host) {
+        if (ab == null || host == null || ab.isManaAbility()) {
+            return false;
+        }
+        if (ab.getApi() != ApiType.Animate) {
+            final String description = ab.getDescription();
+            if (description == null || !description.contains("becomes") || !description.contains("creature")) {
+                return false;
+            }
+        }
+        // Defined$ Self / no targets — ability animates its host, not another permanent.
+        if (ab.usesTargeting()) {
+            return false;
+        }
+        final String defined = ab.getParam("Defined");
+        return defined == null || "Self".equals(defined) || "Card.Self".equals(defined);
+    }
+
+    /**
+     * True when a self-animate on {@code host} can be activated now (restrictions + non-mana costs +
+     * mana from sources other than {@code host}). The host is held out of the mana probe so tapping
+     * Faerie Conclave for its own {@code {U}} does not count as "animate is activatable" when the only
+     * other blue path is a filter (Study Hall) that cannot also fund {@code {1}{U}} without the Conclave.
+     */
+    static boolean hasActivatableSelfAnimate(final Card host, final Player ai) {
+        if (host == null || ai == null || CHECKING_SELF_ANIMATE.get()) {
+            return false;
+        }
+        CHECKING_SELF_ANIMATE.set(Boolean.TRUE);
+        try {
+            for (final SpellAbility ab : host.getNonManaAbilities()) {
+                if (!isSelfAnimateAbility(ab, host)) {
+                    continue;
+                }
+                ab.setActivatingPlayer(ai);
+                if (!ab.checkRestrictions(ai)) {
+                    continue;
+                }
+                if (!CostPayment.canPayAdditionalCosts(ab.getPayCosts(), ab, false, ai)) {
+                    continue;
+                }
+                if (ab.getPayCosts() != null && ab.getPayCosts().hasManaCost()) {
+                    // Exclude host: spare Forest can fund Mutavault {1}; Study Hall+Plains cannot fund
+                    // Conclave {1}{U} without the Conclave's own {U}.
+                    try (ManaPaymentExecution.ReservationSnapshot snap = ManaPaymentExecution.ReservationSnapshot
+                            .take(ai).holdingForNextSpell(Collections.singletonList(host))) {
+                        if (!ComputerUtilMana.canPayManaCost(ab, ai, 0, false)) {
+                            continue;
+                        }
+                    }
+                }
+                return true;
+            }
+        } finally {
+            CHECKING_SELF_ANIMATE.set(Boolean.FALSE);
+        }
+        return false;
     }
 
     // All per-ability predicates below read from the memoized ManaSourceTraits snapshot.
@@ -216,6 +325,7 @@ final class ManaFilterConsolidation {
         boolean selfSacCreature = false;
         boolean tapsOtherCreature = false;
         boolean sacrificesOther = false;
+        boolean costlySideEffect = false;
         final Player controller = card.getController();
 
         for (SpellAbility ability : card.getSpellAbilities()) {
@@ -234,6 +344,7 @@ final class ManaFilterConsolidation {
                 selfSacCreature |= t.selfSacCreature;
                 tapsOtherCreature |= t.requiresTappingOtherCreature;
                 sacrificesOther |= t.sacrificesOther;
+                costlySideEffect |= t.hasCostlySideEffect;
                 score += t.netNegativeAnyManaFilterLoss * NET_NEGATIVE_ANY_MANA_FILTER_PENALTY;
             } else if (!ability.isTrigger() && ability.isPossible()) {
                 score += 13;
@@ -256,6 +367,9 @@ final class ManaFilterConsolidation {
         }
         if (sacrificesOther) {
             score += EXTERNAL_SACRIFICE_MANA_PENALTY;
+        }
+        if (costlySideEffect) {
+            score += COSTLY_SIDE_EFFECT_MANA_PENALTY;
         }
         if (isManaReserveHost(card)) {
             score += MANA_RESERVE_HOST_PENALTY;

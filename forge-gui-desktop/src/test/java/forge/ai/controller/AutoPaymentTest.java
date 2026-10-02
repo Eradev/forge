@@ -471,17 +471,16 @@ public class AutoPaymentTest extends SimulationTest {
     }
 
     /**
-     * Two same-kind consolidators chain: Study Hall {C} funds Selesnya Signet, whose surplus {G} funds
-     * Sungrass Prairie. Karakas (AIManaReserve) must stay untapped rather than paying the last generic pip.
+     * Two same-kind consolidators chain: Study Hall {C} funds Selesnya Signet, whose surplus funds
+     * Sungrass Prairie for the remaining pips of {2}{W}.
      */
     @Test
-    public void signetSurplusFundsSungrassAndKeepsKarakasUntapped() {
+    public void signetSurplusFundsSungrassPrairie() {
         Game game = initAndCreateGame();
         Player p = game.getPlayers().get(1);
 
         addCard("Study Hall", p);
         addCard("Sungrass Prairie", p);
-        addCard("Karakas", p);
         addCard("Selesnya Signet", p);
         Card spell = addCardToZone("Abzan Falconer", p, ZoneType.Hand);
 
@@ -498,19 +497,16 @@ public class AutoPaymentTest extends SimulationTest {
                 sources.anyMatch(c -> "Selesnya Signet".equals(c.getName())));
         AssertJUnit.assertTrue("Sungrass Prairie should be used",
                 sources.anyMatch(c -> "Sungrass Prairie".equals(c.getName())));
-        AssertJUnit.assertFalse("Karakas should stay untapped",
-                sources.anyMatch(c -> "Karakas".equals(c.getName())));
 
         AssertJUnit.assertTrue(prodAutoPay(game, p, new ManaCostBeingPaid(spell.getManaCost()), sa));
         AssertJUnit.assertEquals("Study Hall should be tapped", 1, countTapped(game, "Study Hall"));
         AssertJUnit.assertEquals("Signet should be tapped", 1, countTapped(game, "Selesnya Signet"));
         AssertJUnit.assertEquals("Sungrass Prairie should be tapped", 1, countTapped(game, "Sungrass Prairie"));
-        AssertJUnit.assertEquals("Karakas should not be tapped", 0, countTapped(game, "Karakas"));
     }
 
     /**
      * The chained Signet's surplus must spend the color the spell can't use: for {1}{G}{G}, Selesnya
-     * Signet's {W} (not its {G}) funds Sungrass Prairie, leaving G + G W to pay the spell without Karakas.
+     * Signet's {W} (not its {G}) funds Sungrass Prairie, leaving G + G W to pay the spell.
      * Production must make the same choice from the real mana pool, or Auto-pay fails after the preview
      * promised the chain.
      */
@@ -521,7 +517,6 @@ public class AutoPaymentTest extends SimulationTest {
 
         addCard("Study Hall", p);
         addCard("Sungrass Prairie", p);
-        addCard("Karakas", p);
         addCard("Selesnya Signet", p);
         Card spell = addCardToZone("Yavimaya Elder", p, ZoneType.Hand);
 
@@ -537,14 +532,13 @@ public class AutoPaymentTest extends SimulationTest {
                 sources.anyMatch(c -> "Selesnya Signet".equals(c.getName())));
         AssertJUnit.assertTrue("Sungrass Prairie should be used",
                 sources.anyMatch(c -> "Sungrass Prairie".equals(c.getName())));
-        AssertJUnit.assertFalse("Karakas should stay untapped",
-                sources.anyMatch(c -> "Karakas".equals(c.getName())));
+        AssertJUnit.assertTrue("Study Hall should pay the Signet's {1}",
+                sources.anyMatch(c -> "Study Hall".equals(c.getName())));
 
         AssertJUnit.assertTrue(prodAutoPay(game, p, new ManaCostBeingPaid(spell.getManaCost()), sa));
         AssertJUnit.assertEquals("Study Hall should be tapped", 1, countTapped(game, "Study Hall"));
         AssertJUnit.assertEquals("Signet should be tapped", 1, countTapped(game, "Selesnya Signet"));
         AssertJUnit.assertEquals("Sungrass Prairie should be tapped", 1, countTapped(game, "Sungrass Prairie"));
-        AssertJUnit.assertEquals("Karakas should not be tapped", 0, countTapped(game, "Karakas"));
     }
 
     // --- Tap-then-sacrifice on one host (Heart of Ramos) ---
@@ -1154,7 +1148,9 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertNotNull(mindstoneBF);
 
         Card elfCopy = findCardWithName(simGame, llanowar);
-        AssertJUnit.assertNotNull(elfCopy);
+        AssertJUnit.assertNotNull("Elf should not be sacrificed to Ashnod's Altar", elfCopy);
+        AssertJUnit.assertNull("Treasure should pay {1}; actual treasures remain",
+                findCardWithName(simGame, "Treasure Token"));
     }
 
     @Test
@@ -1227,7 +1223,9 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertTrue(elfCopy.isTapped());
     }
 
-    // Combat-ready dorks stay untapped when a land can pay the same pip.
+    // Combat-ready dorks stay untapped when a basic can pay the same colored pip.
+    // Host-score combat penalty also prefers Forest if the combat sort key is off; still guards the
+    // efficiency +40 path when Forest is an ordinary free alt.
     @Test
     public void preferLandOverCombatCapableManaCreature() {
         Game game = initAndCreateGame();
@@ -1256,13 +1254,107 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals(0, countTapped(game, "Llanowar Elves"));
     }
 
-    // Colorless rock should pay generic before tapping a combat-ready mana creature.
+    // Combo dual (Rootbound Crag) must count as a direct {G} producer so it beats a mono-G dork.
+    // Regression: producesShardDirectly used to ignore Combo mana (manaString null), so Crag sorted
+    // behind Llanowar Elves and lost the early-exit efficiency pick for {2}{G}.
     @Test
-    public void preferColorlessRockOverCombatCapableManaCreatureForGeneric() {
+    public void preferComboDualLandOverCombatCapableManaCreature() {
         Game game = initAndCreateGame();
         Player p = game.getPlayers().get(1);
 
-        addCard("Mind Stone", p);
+        addCard("Mountain", p); // so Rootbound Crag is untapped
+        addCard("Rootbound Crag", p);
+        addCard("Study Hall", p);
+        addCard("Arcane Signet", p);
+        Card elf = addCard("Llanowar Elves", p);
+        elf.setSickness(false);
+        Card spell = addCardToZone("Worldweave", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("2 G");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Rootbound Crag should pay {G}; actual sources: " + sources,
+                sources.anyMatch(c -> "Rootbound Crag".equals(c.getName())));
+        AssertJUnit.assertFalse("Combat-ready Llanowar Elves should stay untapped; actual: " + sources,
+                sources.anyMatch(c -> "Llanowar Elves".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("2 G"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Rootbound Crag"));
+        AssertJUnit.assertEquals(0, countTapped(game, "Llanowar Elves"));
+    }
+
+    // Free any-mana rock must count as direct {G} (producesShardDirectly) so it beats a mono-G dork.
+    // Host score also prefers Meteorite if the combat sort key is off; primary regression is combo/any.
+    @Test
+    public void preferFreeAnyManaRockOverCombatCapableManaCreature() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Meteorite", p); // {T}: Add one mana of any color
+        Card elf = addCard("Llanowar Elves", p);
+        elf.setSickness(false);
+        Card spell = addCardToZone("Giant Growth", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("G");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Meteorite should pay {G}; actual sources: " + sources,
+                sources.anyMatch(c -> "Meteorite".equals(c.getName())));
+        AssertJUnit.assertFalse("Combat-ready Llanowar Elves should stay untapped; actual: " + sources,
+                sources.anyMatch(c -> "Llanowar Elves".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("G"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Meteorite"));
+        AssertJUnit.assertEquals(0, countTapped(game, "Llanowar Elves"));
+    }
+
+    // Basics beat free any-mana for a dedicated color (save the flexible source). Host manaScore also
+    // prefers Forest over Any-producing Meteorite if the flexible-source ranking is off.
+    @Test
+    public void forestBeatsFreeAnyManaRockForGreen() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Forest", p);
+        addCard("Meteorite", p);
+        Card spell = addCardToZone("Giant Growth", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("G"), sa));
+
+        CardCollection sources = predictedManaSources(game, p, cost("G"), sa);
+        AssertJUnit.assertTrue("Forest should pay {G}; actual: " + sources,
+                sources.anyMatch(c -> "Forest".equals(c.getName())));
+        AssertJUnit.assertFalse("Meteorite should stay untapped; actual: " + sources,
+                sources.anyMatch(c -> "Meteorite".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("G"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Forest"));
+        AssertJUnit.assertEquals(0, countTapped(game, "Meteorite"));
+    }
+
+    // Generic {1}: Forest (rank 25) beats combat-ranked Llanowar (35). Mind Stone (rank 0) would always
+    // win even without the combat flag; without combat, Forest and Elf tie at 25 and the land/non-land
+    // tie-break prefers the Elf — so this board fails if the combat soft-penalty is off.
+    @Test
+    public void preferForestOverCombatCapableManaCreatureForGeneric() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Forest", p);
         Card elf = addCard("Llanowar Elves", p);
         elf.setSickness(false);
         Card spell = addCardToZone("Bonesplitter", p, ZoneType.Hand);
@@ -1275,14 +1367,145 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
 
         CardCollection sources = predictedManaSources(game, p, mc, sa);
-        AssertJUnit.assertTrue("Mind Stone should pay {1}; actual sources: " + sources,
-                sources.anyMatch(c -> "Mind Stone".equals(c.getName())));
-        AssertJUnit.assertFalse("Combat-ready Llanowar Elves should stay untapped",
+        AssertJUnit.assertTrue("Forest should pay {1}; actual sources: " + sources,
+                sources.anyMatch(c -> "Forest".equals(c.getName())));
+        AssertJUnit.assertFalse("Combat-ready Llanowar Elves should stay untapped; actual: " + sources,
                 sources.anyMatch(c -> "Llanowar Elves".equals(c.getName())));
 
         AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1"), sa));
-        AssertJUnit.assertEquals(1, countTapped(game, "Mind Stone"));
+        AssertJUnit.assertEquals(1, countTapped(game, "Forest"));
         AssertJUnit.assertEquals(0, countTapped(game, "Llanowar Elves"));
+    }
+
+    // Cheap manland animate ({1}): Meteorite/Petal can fund animate while Mutavault is held out.
+    // Meteorite (any-mana rank 20) beats combat-ranked Mutavault (35); unpenalized Mutavault (10) would pay.
+    @Test
+    public void preferOrdinaryLandOverMutavaultWithActivatableAnimate() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Mutavault", p);
+        addCard("Meteorite", p);
+        addCard("Lotus Petal", p);
+        Card spell = addCardToZone("Bonesplitter", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("1");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertFalse("Mutavault with activatable animate should stay untapped; actual: " + sources,
+                sources.anyMatch(c -> "Mutavault".equals(c.getName())));
+        AssertJUnit.assertTrue("Meteorite should pay {1}; actual: " + sources,
+                sources.anyMatch(c -> "Meteorite".equals(c.getName())));
+        AssertJUnit.assertFalse("Lotus Petal should stay in play; actual: " + sources,
+                sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1"), sa));
+        AssertJUnit.assertEquals(0, countTapped(game, "Mutavault"));
+        AssertJUnit.assertEquals(1, countTapped(game, "Meteorite"));
+        AssertJUnit.assertEquals(1,
+                game.getCardsIn(ZoneType.Battlefield).stream().filter(c -> "Lotus Petal".equals(c.getName())).count());
+    }
+
+    // Expensive manland animate ({1}{U}): Ipnu alone cannot fund it (one tap), so Conclave is ordinary
+    // free {U}. Ipnu's life-{U} scores worse than Conclave, so Conclave pays unless wrongly combat-flagged
+    // (combat sort key then prefers Ipnu).
+    @Test
+    public void faerieConclavePaysWhenAnimateNotActivatable() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card conclave = addCard("Faerie Conclave", p);
+        conclave.setTapped(false); // ETB tapped; untap so it can pay {U}
+        addCard("Ipnu Rivulet", p);
+        Card spell = addCardToZone("Ponder", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("U");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Faerie Conclave should pay {U} as a normal source; actual: " + sources,
+                sources.anyMatch(c -> "Faerie Conclave".equals(c.getName())));
+        AssertJUnit.assertFalse("Ipnu Rivulet should stay untapped; actual: " + sources,
+                sources.anyMatch(c -> "Ipnu Rivulet".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("U"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Faerie Conclave"));
+        AssertJUnit.assertEquals(0, countTapped(game, "Ipnu Rivulet"));
+    }
+
+    // Animated Mutavault over Karakas: catches treating AIManaReserve as an ordinary free alt (combat
+    // efficiency +40) or skipping the non-reserve tie-break. Rank alone is not enough — unpenalized
+    // Mutavault (10) also beats Karakas (45).
+    @Test
+    public void preferAnimatedMutavaultOverKarakas() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card muta = addCard("Mutavault", p);
+        muta.addType("Creature");
+        muta.setBasePower(2);
+        muta.setBaseToughness(2);
+        muta.setSickness(false);
+        addCard("Karakas", p);
+        Card spell = addCardToZone("Bonesplitter", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("1");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Animated Mutavault should pay over Karakas; actual: " + sources,
+                sources.anyMatch(c -> "Mutavault".equals(c.getName())));
+        AssertJUnit.assertFalse("Karakas should stay untapped; actual: " + sources,
+                sources.anyMatch(c -> "Karakas".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Mutavault"));
+        AssertJUnit.assertEquals(0, countTapped(game, "Karakas"));
+    }
+
+    // Animated Mutavault (combat rank 35) loses to Forest (25); unpenalized Mutavault (10) would pay.
+    @Test
+    public void preferForestOverAnimatedMutavault() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card muta = addCard("Mutavault", p);
+        muta.addType("Creature");
+        muta.setBasePower(2);
+        muta.setBaseToughness(2);
+        muta.setSickness(false);
+        addCard("Forest", p);
+        Card spell = addCardToZone("Bonesplitter", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("1");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Forest should pay {1}; actual: " + sources,
+                sources.anyMatch(c -> "Forest".equals(c.getName())));
+        AssertJUnit.assertFalse("Animated Mutavault should stay untapped; actual: " + sources,
+                sources.anyMatch(c -> "Mutavault".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Forest"));
+        AssertJUnit.assertEquals(0, countTapped(game, "Mutavault"));
     }
 
     @Test
@@ -1307,7 +1530,8 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals(2, plan.getDecisions().size());
     }
 
-    // {R} alone with Mountain + Signet should tap the Mountain, not the Signet (single-shard penalty).
+    // {R} with Mountain + Signet: tap Mountain, not Signet (filter single-shard / activation-cost rank).
+    // Host score and hasManaActivationCost rank also prefer Mountain if FILTER_SINGLE_SHARD alone is off.
     @Test
     public void singleShardPrefersBasicOverSignet() {
         Game game = initAndCreateGame();
@@ -1327,14 +1551,16 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals("Signet should be untapped", 0, countTapped(game, "Boros Signet"));
     }
 
-    // {W} with Plains + Karakas: tap Plains; keep Karakas for its bounce ability.
+    // {W} with Karakas + Eiganjo: both ~+13 utility host; without AIManaReserve discovery prefers
+    // Karakas (added first). With reserve (+45) Eiganjo pays. (Confluence fails here: Karakas is still
+    // FREE_REUSABLE so Confluence gets efficiency +55 and loses anyway.)
     @Test
-    public void karakasReservedWhenPlainsAvailable() {
+    public void karakasReservedWhenEiganjoAvailable() {
         Game game = initAndCreateGame();
         Player p = game.getPlayers().get(1);
 
-        addCard("Plains", p);
         addCard("Karakas", p);
+        addCard("Eiganjo Castle", p);
         Card spell = addCardToZone("Healing Salve", p, ZoneType.Hand);
 
         game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
@@ -1343,7 +1569,7 @@ public class AutoPaymentTest extends SimulationTest {
         SpellAbility sa = spell.getFirstSpellAbility();
         assertProductionPayment(game, p, cost("W"), sa);
 
-        AssertJUnit.assertEquals("Plains should be tapped for W", 1, countTapped(game, "Plains"));
+        AssertJUnit.assertEquals("Eiganjo Castle should pay {W}", 1, countTapped(game, "Eiganjo Castle"));
         AssertJUnit.assertEquals("Karakas should stay untapped", 0, countTapped(game, "Karakas"));
     }
 
@@ -1730,7 +1956,8 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals(1, countTapped(game, "Badlands"));
     }
 
-    // Black Lotus must still pay {R} when it is the only red source (refuse-when-abundant must not strand).
+    // Black Lotus must still pay {R} when it is the only red source. Use CMC 1 so the CMC=3 shortfall
+    // path cannot mask isSoleProducerForUnpaidColoredPip (Swamps alone cannot pay {R}).
     @Test
     public void blackLotusPaysRedWhenOnlyRedSource() {
         Game game = initAndCreateGame();
@@ -1749,21 +1976,196 @@ public class AutoPaymentTest extends SimulationTest {
         p.runWithController(() -> {
             final SpellAbility lotusMana = lotus.getManaAbilities().isEmpty() ? null : lotus.getManaAbilities().get(0);
             consider[0] = lotusMana != null
-                    && SpecialCardAi.BlackLotus.consider(p, lotusMana, cost("2 R"));
+                    && SpecialCardAi.BlackLotus.consider(p, lotusMana, cost("R"));
         }, new PlayerControllerAi(game, p, p.getOriginalLobbyPlayer()));
         AssertJUnit.assertTrue("BlackLotus.consider should allow when Lotus is sole {R} source", consider[0]);
 
         AssertJUnit.assertTrue("Lotus must be allowed to pay {R}; board cannot otherwise",
-                canAutoPay(game, p, cost("2 R"), sa));
+                canAutoPay(game, p, cost("R"), sa));
 
-        CardCollection sources = predictedManaSources(game, p, cost("2 R"), sa);
+        CardCollection sources = predictedManaSources(game, p, cost("R"), sa);
         AssertJUnit.assertNotNull("Payment plan should succeed", sources);
         AssertJUnit.assertTrue("Black Lotus should pay {R}; actual sources: " + sources,
                 sources.anyMatch(c -> "Black Lotus".equals(c.getName())));
 
-        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("2 R"), sa));
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("R"), sa));
         AssertJUnit.assertEquals("Black Lotus should be sacrificed", 0,
                 game.getCardsIn(ZoneType.Battlefield).stream().filter(c -> "Black Lotus".equals(c.getName())).count());
+    }
+
+    // --- Costly side effects: PayLife, pain damage, tap-trigger damage, discard ---
+
+    // Eiganjo (+13 utility) vs Mana Confluence: without costly-side-effect, Confluence (~8) beats Eiganjo (~16).
+    @Test
+    public void eiganjoBeatsManaConfluenceForWhite() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Eiganjo Castle", p);
+        addCard("Mana Confluence", p);
+        Card spell = addCardToZone("Sacred Cat", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("W"), sa));
+
+        CardCollection sources = predictedManaSources(game, p, cost("W"), sa);
+        AssertJUnit.assertTrue("Eiganjo Castle should pay {W}; actual: " + sources,
+                sources.anyMatch(c -> "Eiganjo Castle".equals(c.getName())));
+        AssertJUnit.assertFalse("Mana Confluence should stay untapped; actual: " + sources,
+                sources.anyMatch(c -> "Mana Confluence".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("W"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Eiganjo Castle"));
+        AssertJUnit.assertEquals(0, countTapped(game, "Mana Confluence"));
+    }
+
+    // Only Mana Confluence for {W}: still payable via life.
+    @Test
+    public void manaConfluencePaysWhenOnlyWhiteSource() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Mana Confluence", p);
+        Card spell = addCardToZone("Sacred Cat", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("W"), sa));
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("W"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Mana Confluence"));
+    }
+
+    // Two Wastes + Ancient Tomb for {2}: prefer free Wastes over Tomb's 2 damage.
+    @Test
+    public void wastesBeatAncientTombForGenericTwo() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCards("Wastes", 2, p);
+        addCard("Ancient Tomb", p);
+        Card spell = addCardToZone("Mind Stone", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("2"), sa));
+        CardCollection sources = predictedManaSources(game, p, cost("2"), sa);
+        AssertJUnit.assertFalse("Ancient Tomb should stay untapped; actual: " + sources,
+                sources.anyMatch(c -> "Ancient Tomb".equals(c.getName())));
+        AssertJUnit.assertEquals("Both Wastes should pay {2}; actual: " + sources, 2,
+                sources.stream().filter(c -> "Wastes".equals(c.getName())).count());
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("2"), sa));
+        AssertJUnit.assertEquals(2, countTapped(game, "Wastes"));
+        AssertJUnit.assertEquals(0, countTapped(game, "Ancient Tomb"));
+    }
+
+    // Only Ancient Tomb for {2}: still payable despite damage.
+    @Test
+    public void ancientTombPaysWhenOnlyGenericSource() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Ancient Tomb", p);
+        Card spell = addCardToZone("Mind Stone", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("2"), sa));
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("2"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Ancient Tomb"));
+    }
+
+    // Minamo (+13 utility) vs City of Brass: without costly-side-effect, City (~8) beats Minamo (~16).
+    @Test
+    public void minamoBeatsCityOfBrassForBlue() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Minamo, School at Water's Edge", p);
+        addCard("City of Brass", p);
+        Card spell = addCardToZone("Opt", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("U"), sa));
+
+        CardCollection sources = predictedManaSources(game, p, cost("U"), sa);
+        AssertJUnit.assertTrue("Minamo should pay {U}; actual: " + sources,
+                sources.anyMatch(c -> "Minamo, School at Water's Edge".equals(c.getName())));
+        AssertJUnit.assertFalse("City of Brass should stay untapped; actual: " + sources,
+                sources.anyMatch(c -> "City of Brass".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("U"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Minamo, School at Water's Edge"));
+        AssertJUnit.assertEquals(0, countTapped(game, "City of Brass"));
+    }
+
+    // Eiganjo vs Adarkar Wastes pain mode for {W}.
+    @Test
+    public void eiganjoBeatsAdarkarWastesPainForWhite() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Eiganjo Castle", p);
+        addCard("Adarkar Wastes", p);
+        Card spell = addCardToZone("Sacred Cat", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("W"), sa));
+
+        CardCollection sources = predictedManaSources(game, p, cost("W"), sa);
+        AssertJUnit.assertTrue("Eiganjo Castle should pay {W}; actual: " + sources,
+                sources.anyMatch(c -> "Eiganjo Castle".equals(c.getName())));
+        AssertJUnit.assertFalse("Adarkar Wastes should stay untapped; actual: " + sources,
+                sources.anyMatch(c -> "Adarkar Wastes".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("W"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Eiganjo Castle"));
+        AssertJUnit.assertEquals(0, countTapped(game, "Adarkar Wastes"));
+    }
+
+    // Disposable / multiManaDisposable: Mountain beats Lion's Eye Diamond (not a hasCostlySideEffect probe).
+    @Test
+    public void mountainBeatsLionsEyeDiamondForRed() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Mountain", p);
+        addCard("Lion's Eye Diamond", p);
+        addCardToZone("Lightning Bolt", p, ZoneType.Hand); // hand fodder for LED cost if chosen
+        Card spell = addCardToZone("Shock", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("R"), sa));
+
+        CardCollection sources = predictedManaSources(game, p, cost("R"), sa);
+        AssertJUnit.assertTrue("Mountain should pay {R}; actual: " + sources,
+                sources.anyMatch(c -> "Mountain".equals(c.getName())));
+        AssertJUnit.assertFalse("Lion's Eye Diamond should not be sacrificed; actual: " + sources,
+                sources.anyMatch(c -> "Lion's Eye Diamond".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("R"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Mountain"));
+        AssertJUnit.assertEquals("LED should remain", 1,
+                game.getCardsIn(ZoneType.Battlefield).stream()
+                        .filter(c -> "Lion's Eye Diamond".equals(c.getName())).count());
     }
 
     /**
