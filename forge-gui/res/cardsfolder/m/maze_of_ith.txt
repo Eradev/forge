@@ -7,4 +7,5 @@ SVar:RPrevent1:Event$ DamageDone | Prevent$ True | IsCombat$ True | ValidSource$
 SVar:RPrevent2:Event$ DamageDone | Prevent$ True | IsCombat$ True | ValidTarget$ Card.IsRemembered | Description$ Prevent all combat damage that would be dealt to and dealt by that creature this turn. | Secondary$ True
 AI:RemoveDeck:Random
 SVar:AILandRemovalMinScore:170
+SVar:AIManaReserve:True
 Oracle:{T}: Untap target attacking creature. Prevent all combat damage that would be dealt to and dealt by that creature this turn.
