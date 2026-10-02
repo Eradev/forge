@@ -2,11 +2,14 @@ package forge.ai;
 
 import forge.card.CardType;
 import forge.game.ability.AbilityUtils;
+import forge.game.ability.ApiType;
 import forge.game.card.Card;
 import forge.game.cost.Cost;
+import forge.game.cost.CostDiscard;
 import forge.game.cost.CostExile;
 import forge.game.cost.CostPart;
 import forge.game.cost.CostPartMana;
+import forge.game.cost.CostPayLife;
 import forge.game.cost.CostPutCardToLib;
 import forge.game.cost.CostReturn;
 import forge.game.cost.CostSacrifice;
@@ -15,6 +18,8 @@ import forge.game.cost.CostTapType;
 import forge.game.cost.CostUntap;
 import forge.game.spellability.AbilityManaPart;
 import forge.game.spellability.SpellAbility;
+import forge.game.trigger.Trigger;
+import forge.game.trigger.TriggerType;
 
 import java.util.Collections;
 import java.util.HashSet;
@@ -80,6 +85,23 @@ final class ManaSourceTraits {
     final int netNegativeAnyManaFilterLoss;
     final boolean manaActivationConsolidator;
     final boolean manaReserveHost;
+    /**
+     * Activation costs life ({@code PayLife}) — Mana Confluence, Horizon Canopy, etc. Soft-penalized when
+     * free reusable alternatives exist; not marked {@link #disposable}.
+     */
+    final boolean paysLife;
+    /**
+     * Activation deals damage / causes you to lose life via SubAbility (Ancient Tomb, pain duals) or a
+     * host {@code Taps}/{@code TapsForMana} trigger (City of Brass). Soft-penalized like {@link #paysLife}.
+     */
+    final boolean selfDamage;
+    /**
+     * Cost discards cards or exiles non-self cards from hand/graveyard (Bog Witch, Lion's Eye Diamond,
+     * Spirit Guide). Usually already {@link #disposable}; kept as an explicit side-effect flag for scoring.
+     */
+    final boolean discardsOrExilesCards;
+    /** Life, self-damage, or discard/exile side effect — prefer free reusable alts when available. */
+    final boolean hasCostlySideEffect;
     /** {@link SpellAbility#calculateScoreForManaAbility()} (walks untap replacement effects; expensive). */
     final int manaScore;
 
@@ -116,6 +138,10 @@ final class ManaSourceTraits {
         netNegativeAnyManaFilterLoss = 0;
         manaActivationConsolidator = false;
         manaReserveHost = false;
+        paysLife = false;
+        selfDamage = false;
+        discardsOrExilesCards = false;
+        hasCostlySideEffect = false;
         manaScore = 0;
     }
 
@@ -147,6 +173,8 @@ final class ManaSourceTraits {
         boolean sacOther = false;
         boolean leaves = false;
         boolean tapsCreature = false;
+        boolean lifeCost = false;
+        boolean discardOrExile = false;
         final Set<String> keys = new HashSet<>();
         if (parts != null) {
             for (final CostPart part : parts) {
@@ -160,6 +188,13 @@ final class ManaSourceTraits {
                     }
                 } else if (part instanceof CostTapType && isCreatureTapType(part.getType())) {
                     tapsCreature = true;
+                } else if (part instanceof CostPayLife) {
+                    lifeCost = true;
+                } else if (part instanceof CostDiscard) {
+                    discardOrExile = true;
+                } else if (part instanceof CostExile && !part.payCostFromSource()) {
+                    // Exile from hand/GY (Spirit Guide, Food Chain targets) — not self-exile like Mirrored Lotus.
+                    discardOrExile = true;
                 }
                 if (part instanceof CostTap) {
                     keys.add("tap");
@@ -177,6 +212,9 @@ final class ManaSourceTraits {
         sacrificesOther = sacOther;
         hostLeavesBattlefield = leaves;
         exclusiveCostKeys = keys.isEmpty() ? Collections.emptySet() : keys;
+        paysLife = lifeCost;
+        discardsOrExilesCards = discardOrExile;
+        selfDamage = harmsController(ma, host);
 
         variableX = isManaAbility && payCosts != null && payCosts.hasXInAnyCostPart()
                 && (payCosts.getCostMana() == null || payCosts.getCostMana().getAmountOfX() == 0)
@@ -244,7 +282,44 @@ final class ManaSourceTraits {
                 ? Math.max(0, activationCMC - producedAmount) : 0;
         manaActivationConsolidator = hasManaActivationCost && (netPositiveConsolidator || comboFilter);
         manaReserveHost = ManaFilterConsolidation.isManaReserveHost(host);
+        hasCostlySideEffect = paysLife || selfDamage || discardsOrExilesCards;
         manaScore = isManaAbility && payCosts != null ? ma.calculateScoreForManaAbility() : 0;
+    }
+
+    /**
+     * True when activating {@code ma} damages / drains its controller: a DealDamage/LoseLife SubAbility
+     * targeting You, or a host tap trigger that does the same (City of Brass).
+     */
+    private static boolean harmsController(final SpellAbility ma, final Card host) {
+        for (SpellAbility sub = ma.getSubAbility(); sub != null; sub = sub.getSubAbility()) {
+            if (isSelfHarmApi(sub)) {
+                return true;
+            }
+        }
+        if (host == null) {
+            return false;
+        }
+        for (final Trigger t : host.getTriggers()) {
+            if (t.getMode() != TriggerType.Taps && t.getMode() != TriggerType.TapsForMana) {
+                continue;
+            }
+            final SpellAbility trigSa = t.getOverridingAbility();
+            if (trigSa != null && isSelfHarmApi(trigSa)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isSelfHarmApi(final SpellAbility sa) {
+        if (sa == null) {
+            return false;
+        }
+        final ApiType api = sa.getApi();
+        if (api != ApiType.DealDamage && api != ApiType.LoseLife) {
+            return false;
+        }
+        return "You".equals(sa.getParamOrDefault("Defined", ""));
     }
 
     /** Traits for {@code ma}, memoized for the current outer payment when one is bound. */
