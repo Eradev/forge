@@ -971,7 +971,7 @@ final class ManaPaymentExecution {
         if (!canActivateFilter(ai, filter, ComputerUtilMana.getOrBuildManaAbilityMap(ai, true, ctx), false)) {
             return null;
         }
-        final Set<Card> consumed = collectCardsConsumedByPayment(filter, sa, ai, ctx);
+        final Set<Card> consumed = collectCardsConsumedByPayment(filter, sa, cost, ai, ctx);
         if (consumed == null) {
             return null;
         }
@@ -1168,6 +1168,31 @@ final class ManaPaymentExecution {
         return true;
     }
 
+    /**
+     * Drop sole cover for an unpaid colored pip of {@code outerCost} when another free reusable can fund
+     * the filter (Mana Crypt over Mountain while {@code {R}} remains). No-op when every candidate is
+     * dedicated or {@code outerCost} is unknown (nested probe without the spell cost).
+     */
+    static void excludeDedicatedColoredProducersForNestedActivation(final List<SpellAbility> freeCandidates,
+            final ManaCostBeingPaid outerCost, final Player ai,
+            final ListMultimap<Integer, SpellAbility> manaAbilityMap) {
+        if (outerCost == null || freeCandidates == null || freeCandidates.size() <= 1 || ai == null) {
+            return;
+        }
+        boolean hasNonDedicated = false;
+        for (final SpellAbility ma : freeCandidates) {
+            if (!isDedicatedProducerForOtherUnpaidColoredShard(ma, outerCost, null, manaAbilityMap, ai)) {
+                hasNonDedicated = true;
+                break;
+            }
+        }
+        if (!hasNonDedicated) {
+            return;
+        }
+        freeCandidates.removeIf(ma ->
+                isDedicatedProducerForOtherUnpaidColoredShard(ma, outerCost, null, manaAbilityMap, ai));
+    }
+
     /** True when {@code candidate}'s host is the only reusable free producer for some other unpaid colored pip. */
     static boolean isDedicatedProducerForOtherUnpaidColoredShard(final SpellAbility candidate,
             final ManaCostBeingPaid cost, final ManaCostShard payingShard,
@@ -1204,11 +1229,15 @@ final class ManaPaymentExecution {
      * The filter host's own free {@code {C}} (Study Hall) is excluded via sibling conflict — tapping
      * for the paid any-mana line strands that path — so compete only when other reusable colorless
      * sources cannot cover spell generic + activation. Surplus rocks (Mind Stone, Thought Vessel, …)
-     * let Study Hall pay a colored pip instead of burning a Lotus Petal.
+     * and multi-mana rocks (Mana Crypt's {@code {C}{C}}) let Study Hall pay a colored pip instead of
+     * burning a Lotus Petal.
      * <p>
      * Sources that are the sole reusable cover for another unpaid colored pip (e.g. the only Plains
      * for {@code {W}} while Study Hall would pay {@code {G}}) do not count as surplus — otherwise
      * Study Hall looks funded, burns the rock on activation, and still spends Petal on spell generic.
+     * <p>
+     * Cover is mana amount per host (not host count): one Mana Crypt covers both Study Hall's
+     * {@code {1}} and the spell's {@code {1}}.
      */
     static boolean filterActivationCompetesForSpellGeneric(final SpellAbility filter,
             final ManaCostBeingPaid cost, final ManaCostShard payingShard, final Player ai,
@@ -1227,7 +1256,9 @@ final class ManaPaymentExecution {
         final ListMultimap<Integer, SpellAbility> manaAbilityMap = ComputerUtilMana.getOrBuildManaAbilityMap(ai, true, ctx);
         final int needed = cost.getGenericManaAmount() + activationGeneric;
         // Unique hosts: multiple free abilities on one rock must not inflate the cover count.
+        // Sum produced amount so Mana Crypt ({C}{C}) covers activation + spell generic alone.
         final HashSet<Card> countedHosts = new HashSet<>();
+        int available = 0;
         for (final SpellAbility candidate : manaAbilityMap.get(ManaAtom.GENERIC)) {
             if (!isFreeReusableSourceForNestedActivation(candidate, filter)
                     || !isCurrentlyAvailableForNestedActivation(ai, candidate, filter)) {
@@ -1241,11 +1272,12 @@ final class ManaPaymentExecution {
                 continue;
             }
             countedHosts.add(host);
-            if (countedHosts.size() >= needed) {
+            available += Math.max(1, ManaFilterConsolidation.getManaProducedAmount(candidate));
+            if (available >= needed) {
                 return false;
             }
         }
-        return countedHosts.size() < needed;
+        return available < needed;
     }
 
     /** Free nested-activation source that is not a one-shot (Petal, Treasure, etc.). */
@@ -1469,7 +1501,8 @@ final class ManaPaymentExecution {
 
         final boolean preferMultiForGeneric = toPay.isGeneric() || toPay == ManaCostShard.X;
         final SpellAbility best = CastabilityProbe.pickBest(cost, valid, sa, ai, toPay,
-                ManaPaymentExecution::collectCardsConsumedByPayment, preferMultiForGeneric, test, ctx);
+                (cand, spell, player, probeCtx) -> collectCardsConsumedByPayment(cand, spell, cost, player, probeCtx),
+                preferMultiForGeneric, test, ctx);
         if (best == null) {
             return refreshExpressChoice(cost, sa, ai, toPay, valid.get(0));
         }
@@ -1792,7 +1825,7 @@ final class ManaPaymentExecution {
             final List<SpellAbility> alternatives, final AlternativeScan altScan, final boolean test,
             final ManaPaymentContext ctx) {
         refreshExpressChoice(cost, sa, ai, toPay, chosen);
-        final Set<Card> consumed = collectCardsConsumedByPayment(chosen, sa, ai, ctx);
+        final Set<Card> consumed = collectCardsConsumedByPayment(chosen, sa, cost, ai, ctx);
         if (consumed == null) {
             return new PaymentImpact(false, Integer.MAX_VALUE, chosen, cost, toPay, alternatives, altScan, ai, sa, ctx);
         }
@@ -2165,11 +2198,20 @@ final class ManaPaymentExecution {
     /** Cards tapped (including nested activation costs) if this mana ability is chosen. */
     static Set<Card> collectCardsConsumedByPayment(final SpellAbility saPayment, final SpellAbility sa,
             final Player ai, final ManaPaymentContext ctx) {
+        return collectCardsConsumedByPayment(saPayment, sa, null, ai, ctx);
+    }
+
+    /**
+     * Cards tapped (including nested activation costs) if this mana ability is chosen.
+     * When {@code outerCost} is set, nested activators avoid dedicated covers for its unpaid colored pips.
+     */
+    static Set<Card> collectCardsConsumedByPayment(final SpellAbility saPayment, final SpellAbility sa,
+            final ManaCostBeingPaid outerCost, final Player ai, final ManaPaymentContext ctx) {
         final Set<Card> consumed = new HashSet<>();
         consumed.add(saPayment.getHostCard());
         if (saPayment.getPayCosts() != null && saPayment.getPayCosts().hasManaCost()) {
             final ManaPaymentContext predictCtx = ctx == null ? null : ctx.withFilterProbe();
-            final CardCollection nested = predictNestedActivationTaps(saPayment, sa, ai, predictCtx);
+            final CardCollection nested = predictNestedActivationTaps(saPayment, sa, outerCost, ai, predictCtx);
             if (nested == null) {
                 return null;
             }
@@ -2181,13 +2223,20 @@ final class ManaPaymentExecution {
     /** Dry-run nested generic activation cost payment; returns tapped cards or null if unpayable. */
     static CardCollection predictNestedActivationTaps(final SpellAbility filterAb,
             final SpellAbility sa, final Player ai, final ManaPaymentContext ctx) {
+        return predictNestedActivationTaps(filterAb, sa, null, ai, ctx);
+    }
+
+    /** Dry-run nested generic activation cost payment; returns tapped cards or null if unpayable. */
+    static CardCollection predictNestedActivationTaps(final SpellAbility filterAb,
+            final SpellAbility sa, final ManaCostBeingPaid outerCost, final Player ai,
+            final ManaPaymentContext ctx) {
         final ManaPaymentContext probeCtx = ctx == null ? ManaPaymentContext.outer() : ctx;
         final CardCollection taps = new CardCollection();
         final List<Mana> probePoolRemovals = new ArrayList<>();
         final List<Mana> probeDeposited = new ArrayList<>();
         try (ReservationSnapshot snap = ReservationSnapshot.take(ai)) {
-            if (!payNestedActivationCost(filterAb, sa, null, ai, ArrayListMultimap.create(), probePoolRemovals, probeDeposited,
-                    true, false, taps, probeCtx)) {
+            if (!payNestedActivationCost(filterAb, sa, outerCost, ai, ArrayListMultimap.create(), probePoolRemovals,
+                    probeDeposited, true, false, taps, probeCtx)) {
                 return null;
             }
             return taps;
@@ -2787,6 +2836,9 @@ final class ManaPaymentExecution {
             if (reusableForThisShard) {
                 freeCandidates.removeIf(ManaFilterConsolidation::isDisposableManaAbility);
             }
+            // Do not burn the only Mountain for Study Hall's {1} when Mana Crypt can fund it and {R}
+            // is still unpaid on the spell — otherwise Petal is forced onto the stranded colored pip.
+            excludeDedicatedColoredProducersForNestedActivation(freeCandidates, outerCost, ai, manaAbilityMap);
             if (freeCandidates.isEmpty()) {
                 payNestedCostFromPool(filterAb, nestedCost, pool, outerCost, test, manaSpentToPay);
                 if (test) {
