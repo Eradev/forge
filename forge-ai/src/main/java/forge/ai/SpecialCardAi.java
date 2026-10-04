@@ -134,7 +134,10 @@ public class SpecialCardAi {
             }
 
             CardCollection manaSources = ComputerUtilMana.getAvailableManaSources(ai, true);
-            int numManaSrcs = CardLists.filter(manaSources, c -> c != lotus).size();
+            // Ignore sources already reserved this payment and the Lotus itself.
+            int numManaSrcs = CardLists.filter(manaSources, c -> c != lotus
+                    && !AiCardMemory.isRememberedCard(ai, c, AiCardMemory.MemorySet.PAYS_SAC_COST)
+                    && !AiCardMemory.isRememberedCard(ai, c, AiCardMemory.MemorySet.PAYS_TAP_COST)).size();
 
             CardCollection allCards = CardLists.filter(ai.getAllCards(), Arrays.asList(CardPredicates.NON_TOKEN,
                     CardPredicates.NON_LANDS, CardPredicates.isOwner(ai)));
@@ -184,8 +187,18 @@ public class SpecialCardAi {
                 if (c == lotus || c.isTapped()) {
                     continue;
                 }
+                // Test-mode payment leaves sacrificed hosts on the battlefield until cleanup.
+                if (AiCardMemory.isRememberedCard(ai, c, AiCardMemory.MemorySet.PAYS_SAC_COST)
+                        || AiCardMemory.isRememberedCard(ai, c, AiCardMemory.MemorySet.PAYS_TAP_COST)) {
+                    continue;
+                }
                 for (final SpellAbility ma : ComputerUtilMana.getAIPlayableMana(c)) {
                     if (ma.getHostCard() != c) {
+                        continue;
+                    }
+                    // Study Hall's {1}:any is not a free alternative — counting it here made Lotus
+                    // refuse {1}{R} after Petal paid {B}, then still burn Lotus to activate the filter.
+                    if (ManaFilterConsolidation.hasManaActivationCost(ma)) {
                         continue;
                     }
                     final AbilityManaPart mp = ma.getManaPart();

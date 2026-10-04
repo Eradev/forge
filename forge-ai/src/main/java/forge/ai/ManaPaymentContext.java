@@ -406,11 +406,13 @@ final class ManaPaymentContext {
 
     /**
      * Nested feasibility / castability dry-run. Uses a fresh surplus list so nested deposits cannot
-     * leak into the outer payment as phantom floating mana.
+     * leak into the outer payment as phantom floating mana — but surplus must still be spendable
+     * inside this nested payment (e.g. Black Lotus funding Study Hall then paying spell generic).
+     * Passing {@code null} dropped that surplus and made stranding probes fail spuriously.
      */
     ManaPaymentContext nestedWithFilterProbe() {
         return new ManaPaymentContext(caches, depth + 1, true, thoroughness, paymentPromptPreview,
-                tracePaymentPlan, null);
+                tracePaymentPlan, new ArrayList<>());
     }
 
     void recordStep(final SpellAbility sa, final boolean test, final String msg) {
