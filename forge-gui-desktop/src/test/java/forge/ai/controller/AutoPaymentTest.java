@@ -355,6 +355,77 @@ public class AutoPaymentTest extends SimulationTest {
                 countTapped(game, "Study Hall") + countTapped(game, "Reliquary Tower") == 1);
     }
 
+    // Black Lotus + Petal cover {1}{B}{R} directly; do not burn Lotus to activate Study Hall for one pip.
+    @Test
+    public void blackLotusAndPetalPayWithoutStudyHallFilter() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Black Lotus", p);
+        addCard("Lotus Petal", p);
+        addCard("Study Hall", p);
+        Card spell = addCardToZone("Alesha, Who Laughs at Fate", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("1 B R");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertNotNull("Payment plan should succeed; sources were null", sources);
+        AssertJUnit.assertTrue("Black Lotus should pay; actual sources: " + sources,
+                sources.anyMatch(c -> "Black Lotus".equals(c.getName())));
+        AssertJUnit.assertTrue("Lotus Petal should pay the other color; actual sources: " + sources,
+                sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
+        AssertJUnit.assertFalse("Study Hall filter is unnecessary; actual sources: " + sources,
+                sources.anyMatch(c -> "Study Hall".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1 B R"), sa));
+        AssertJUnit.assertEquals(0, countTapped(game, "Study Hall"));
+        AssertJUnit.assertEquals(0,
+                game.getCardsIn(ZoneType.Battlefield).stream().filter(c -> "Black Lotus".equals(c.getName())).count());
+        AssertJUnit.assertEquals(0,
+                game.getCardsIn(ZoneType.Battlefield).stream().filter(c -> "Lotus Petal".equals(c.getName())).count());
+    }
+
+    // Petal should pay {R}; Study Hall must not steal Mox Jet as filter fuel and leave Petal on {1}.
+    // Study Hall's free {C} for the spell's {1} is fine.
+    @Test
+    public void studyHallFilterNotUsedWhenBlackSourcesWouldLeavePetalPayingGeneric() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Mox Jet", p);
+        addCard("Swamp", p);
+        addCard("Study Hall", p);
+        addCard("Lotus Petal", p);
+        Card spell = addCardToZone("Alesha, Who Laughs at Fate", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("1 B R");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Lotus Petal should pay {R}; actual sources: " + sources,
+                sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
+        // Bad plan tapped Jet+Hall+Swamp+Petal (filter for {R}, Petal for {1}). Good plan is Petal for
+        // {R}, Jet/Swamp for {B}, and Hall {C} or Swamp/Jet for {1} — at most three sources.
+        AssertJUnit.assertTrue("Must not fund Study Hall filter then still spend Petal; actual: " + sources,
+                sources.size() <= 3);
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1 B R"), sa));
+        AssertJUnit.assertEquals("Lotus Petal should be sacrificed for {R}", 0,
+                game.getCardsIn(ZoneType.Battlefield).stream().filter(c -> "Lotus Petal".equals(c.getName())).count());
+        AssertJUnit.assertEquals("Mox Jet should pay {B}", 1, countTapped(game, "Mox Jet"));
+        AssertJUnit.assertEquals("Study Hall {C} may pay {1}", 1, countTapped(game, "Study Hall"));
+        AssertJUnit.assertEquals("Swamp should stay untapped", 0, countTapped(game, "Swamp"));
+    }
+
     // Surplus colorless rocks cover Study Hall's {1} and the spell's {1}; prefer Study Hall for {W} over Petal.
     @Test
     public void studyHallBeatsLotusPetalForWhiteWhenSurplusColorlessRocks() {
