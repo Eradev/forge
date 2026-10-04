@@ -765,6 +765,15 @@ final class ManaPaymentExecution {
      */
     static boolean freeGenericSourcesCover(final int need, final Predicate<Card> excluded, final Player ai,
             final ManaPaymentContext ctx) {
+        return freeGenericSourcesCover(need, excluded, ai, ctx, false);
+    }
+
+    /**
+     * @param reusableOnly when true, skip one-shots (Petal, Treasure) — used when asking whether a filter
+     *                     activation still leaves spell generic payable without burning a disposable.
+     */
+    static boolean freeGenericSourcesCover(final int need, final Predicate<Card> excluded, final Player ai,
+            final ManaPaymentContext ctx, final boolean reusableOnly) {
         final ListMultimap<Integer, SpellAbility> map = ComputerUtilMana.getOrBuildManaAbilityMap(ai, true, ctx);
         final Set<Card> counted = new HashSet<>();
         int available = 0;
@@ -775,6 +784,9 @@ final class ManaPaymentExecution {
             }
             // Skip paid filters first so Study Hall's {1}:any does not mark the host before {T}:{C}.
             if (ManaFilterConsolidation.hasManaActivationCost(ma)) {
+                continue;
+            }
+            if (reusableOnly && ManaFilterConsolidation.isDisposableManaAbility(ma)) {
                 continue;
             }
             if (hasTapCost(ma) && (host.isTapped()
@@ -1029,15 +1041,19 @@ final class ManaPaymentExecution {
         return canActivateFilter(ai, filter, manaAbilityMap, true)
                 && !filterActivationCompetesForSpellGeneric(filter, cost, payingShard, ai, ctx)
                 && !filterActivationStealsDedicatedColoredProducers(filter, cost, payingShard, ai, ctx)
-                // Filter must actually save the disposable: remaining colored pips still coverable
-                // by reusables after the activation consumes a surplus land (Plains fueling Study Hall
-                // for {B} while Glacial Fortress+Petal still need both {W} and {U} does not qualify).
+                // Filter must actually save the disposable: remaining colored pips and spell generic
+                // still coverable by reusables after activation (Mox Jet fueling Study Hall for {R}
+                // while Swamp is needed for {B} still leaves Petal on {1} — does not qualify).
                 && remainingColoredShardsCoveredByReusablesAfterFilterActivation(filter, cost, payingShard, ai, ctx);
     }
 
     /**
      * After paying {@code payingShard} via {@code filter} (and consuming surplus reusable activators for
-     * its mana cost), can every other unpaid colored pip still be paid by reusable free producers?
+     * its mana cost), can every other unpaid colored pip <em>and</em> the spell's generic still be paid
+     * by reusable free producers (without a disposable)? Mana Crypt's spare {@code {C}} after funding
+     * Study Hall counts toward generic; Mox Jet + Swamp for {@code {1}{B}{R}} does not — after Jet fuels
+     * the filter and Swamp pays {@code {B}}, generic still needs Petal, so the filter must not "beat"
+     * the disposable for {@code {R}}.
      */
     static boolean remainingColoredShardsCoveredByReusablesAfterFilterActivation(final SpellAbility filter,
             final ManaCostBeingPaid cost, final ManaCostShard payingShard, final Player ai,
@@ -1058,6 +1074,7 @@ final class ManaPaymentExecution {
             consumed.add(filterHost);
         }
         int needActivators = Math.max(0, activationGeneric);
+        int activatorSurplus = 0;
         if (needActivators > 0) {
             for (final SpellAbility candidate : manaAbilityMap.get(ManaAtom.GENERIC)) {
                 if (needActivators <= 0) {
@@ -1074,8 +1091,11 @@ final class ManaPaymentExecution {
                 if (isDedicatedProducerForOtherUnpaidColoredShard(candidate, cost, payingShard, manaAbilityMap, ai)) {
                     continue;
                 }
+                final int produced = Math.max(1, ManaFilterConsolidation.getManaProducedAmount(candidate));
+                final int used = Math.min(needActivators, produced);
+                needActivators -= used;
+                activatorSurplus += produced - used;
                 consumed.add(host);
-                needActivators--;
             }
             if (needActivators > 0) {
                 return false;
@@ -1114,7 +1134,10 @@ final class ManaPaymentExecution {
                 return false;
             }
         }
-        return true;
+        // Study Hall must not "save" a Petal on a colored pip if that Petal is still required for {1}.
+        int genericNeed = Math.max(0, cost.getGenericManaAmount() - activatorSurplus);
+        return genericNeed <= 0
+                || freeGenericSourcesCover(genericNeed, consumed::contains, ai, ctx, true);
     }
 
     static boolean consolidatorBeatsDisposable(final SpellAbility filter, final ManaCostBeingPaid cost,
@@ -1191,6 +1214,24 @@ final class ManaPaymentExecution {
         }
         freeCandidates.removeIf(ma ->
                 isDedicatedProducerForOtherUnpaidColoredShard(ma, outerCost, null, manaAbilityMap, ai));
+    }
+
+    /**
+     * Drop Black Lotus / other multi-mana one-shots from filter activation when they already produce
+     * enough mana to finish {@code outerCost}. Burning Lotus for Study Hall's {@code {1}} then still
+     * needing Petal for a color is strictly worse than Lotus + Petal paying the spell directly.
+     */
+    static void excludeMultiManaDisposablesThatCanCoverOuterCost(final List<SpellAbility> freeCandidates,
+            final ManaCostBeingPaid outerCost) {
+        if (outerCost == null || freeCandidates == null || freeCandidates.isEmpty()) {
+            return;
+        }
+        final int unpaid = countUnpaidPips(outerCost);
+        if (unpaid <= 0) {
+            return;
+        }
+        freeCandidates.removeIf(ma -> isMultiManaDisposable(ma)
+                && ManaFilterConsolidation.getManaProducedAmount(ma) >= unpaid);
     }
 
     /** True when {@code candidate}'s host is the only reusable free producer for some other unpaid colored pip. */
@@ -2839,6 +2880,8 @@ final class ManaPaymentExecution {
             // Do not burn the only Mountain for Study Hall's {1} when Mana Crypt can fund it and {R}
             // is still unpaid on the spell — otherwise Petal is forced onto the stranded colored pip.
             excludeDedicatedColoredProducersForNestedActivation(freeCandidates, outerCost, ai, manaAbilityMap);
+            // Black Lotus must pay the spell (e.g. {1}{B}{R} with Petal), not Study Hall's activation.
+            excludeMultiManaDisposablesThatCanCoverOuterCost(freeCandidates, outerCost);
             if (freeCandidates.isEmpty()) {
                 payNestedCostFromPool(filterAb, nestedCost, pool, outerCost, test, manaSpentToPay);
                 if (test) {
@@ -3792,7 +3835,7 @@ final class ManaPaymentExecution {
             }
 
             if (saPayment != null && "BlackLotus".equals(saPayment.getParam("AILogic"))
-                    && !SpecialCardAi.BlackLotus.consider(ai, sa, cost)) {
+                    && !SpecialCardAi.BlackLotus.consider(ai, saPayment, cost)) {
                 // Never exclude the sole remaining source for this shard (e.g. {2}{R} with only Swamps
                 // + Lotus): refusing here empties the candidate list and fails the payment.
                 final boolean soleForShard = saList == null || saList.stream().noneMatch(ma -> ma != saPayment);
