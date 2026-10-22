@@ -3013,9 +3013,10 @@ final class ManaPaymentExecution {
     }
 
     /**
-     * Prefer a mana-banking chain (signet → second consolidator), then a single net-positive consolidator,
-     * before falling through to shard-by-shard payment. Banking stays ahead so Signet→Bluffs / Signet→Prairie
-     * cases are not flattened into a lone consolidator tap.
+     * Prefer a mana-banking chain (signet → second consolidator, or rock → any-mana filter → combo land),
+     * then a single net-positive consolidator, before falling through to shard-by-shard payment. Banking
+     * stays ahead so Signet→Bluffs / Sol Ring→Study Hall→Wooded Bastion are not flattened into a lone tap
+     * that spends the combo land's free {C} and strands its filter.
      */
     static boolean tryMultiPipPayment(final ManaCostBeingPaid cost, final SpellAbility sa,
             final Player ai, final ListMultimap<ManaCostShard, SpellAbility> sourcesForShards,
@@ -3023,6 +3024,10 @@ final class ManaPaymentExecution {
             final boolean effect, final ManaPool manapool, final CardCollection planOut,
             final List<SpellAbility> paymentList, final ManaPaymentContext ctx) {
         if (tryPayViaManaBankingChain(cost, sa, ai, sourcesForShards, manaSpentToPay, testDepositedSurplus,
+                test, effect, manapool, planOut, paymentList, ctx)) {
+            return true;
+        }
+        if (tryPayViaAnyFilterComboChain(cost, sa, ai, sourcesForShards, manaSpentToPay, testDepositedSurplus,
                 test, effect, manapool, planOut, paymentList, ctx)) {
             return true;
         }
@@ -3088,6 +3093,234 @@ final class ManaPaymentExecution {
         }
         return executeSignetThenComboBanking(cost, sa, ai, signet, combo, sourcesForShards, manaSpentToPay,
                 testDepositedSurplus, test, effect, manapool, planOut, paymentList, ctx);
+    }
+
+    /**
+     * Bank a free rock, an any-mana filter, and a combo land, then pay the spell from the pool.
+     * Sol Ring {@code {C}{C}} funds Study Hall {@code {1}}→{@code {G}}; that {@code {G}} funds Wooded
+     * Bastion {@code {G/W}}→{@code {G}{G}}; leftover {@code {C}} plus {@code {G}{G}} pays {@code {1}{G}{G}}.
+     * Shard payment would tap Wooded Bastion for {@code {C}} to fuel Study Hall and never reach the filter.
+     * <p>
+     * Skipped when a free colored source can already pay the combo (Forest → Bastion), so that path stays
+     * on the single-consolidator planner.
+     */
+    static boolean tryPayViaAnyFilterComboChain(final ManaCostBeingPaid cost, final SpellAbility sa,
+            final Player ai, final ListMultimap<ManaCostShard, SpellAbility> sourcesForShards,
+            final List<Mana> manaSpentToPay, final List<Mana> testDepositedSurplus, final boolean test,
+            final boolean effect, final ManaPool manapool, final CardCollection planOut,
+            final List<SpellAbility> paymentList, final ManaPaymentContext ctx) {
+        if (cost.isPaid() || !hasUnpaidColoredShards(cost) || countUnpaidPips(cost) < 2
+                || (ctx != null && ctx.inFilterActivationProbe)) {
+            return false;
+        }
+        final List<SpellAbility> combos = new ArrayList<>();
+        final List<SpellAbility> anyFilters = new ArrayList<>();
+        final List<SpellAbility> rocks = new ArrayList<>();
+        for (final Card c : ai.getCardsIn(ZoneType.Battlefield)) {
+            for (final SpellAbility ma : c.getManaAbilities()) {
+                if (ma.getHostCard() != c) {
+                    continue;
+                }
+                if (hasTapCost(ma) && AiCardMemory.isRememberedCard(ai, c, MemorySet.PAYS_TAP_COST)) {
+                    continue;
+                }
+                if (ManaFilterConsolidation.isComboConsolidatingFilter(ma)) {
+                    combos.add(ma);
+                } else if (ManaFilterConsolidation.isAnyManaConsolidatingFilter(ma)) {
+                    anyFilters.add(ma);
+                } else if (isReusableChainFuel(ma, ai)) {
+                    rocks.add(ma);
+                }
+            }
+        }
+        if (combos.isEmpty() || anyFilters.isEmpty() || rocks.isEmpty()) {
+            return false;
+        }
+        rocks.sort(ManaPaymentExecution::compareChainFuel);
+        final ListMultimap<Integer, SpellAbility> manaAbilityMap =
+                ComputerUtilMana.getOrBuildManaAbilityMap(ai, true, ctx);
+        for (final SpellAbility combo : combos) {
+            if (canActivateFilter(ai, combo, manaAbilityMap, false)) {
+                continue;
+            }
+            for (final SpellAbility anyFilter : anyFilters) {
+                if (anyFilter.getHostCard() == combo.getHostCard()) {
+                    continue;
+                }
+                final byte color = colorAnyFilterFeedsCombo(anyFilter, combo, cost);
+                if (color == 0) {
+                    continue;
+                }
+                for (final SpellAbility rock : rocks) {
+                    if (rock.getHostCard() == combo.getHostCard()
+                            || rock.getHostCard() == anyFilter.getHostCard()) {
+                        continue;
+                    }
+                    if (!isCurrentlyAvailableForNestedActivation(ai, rock, anyFilter)) {
+                        continue;
+                    }
+                    if (canPayViaRockAnyFilterCombo(cost, sa, ai, rock, anyFilter, combo, color, ctx)) {
+                        return executeRockAnyFilterCombo(cost, sa, ai, rock, anyFilter, combo, color,
+                                sourcesForShards, manaSpentToPay, testDepositedSurplus, test, effect,
+                                manapool, planOut, paymentList, ctx);
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Free reusable mana (Sol Ring, a basic) that can be banked to pay an any-mana filter's {1}. */
+    static boolean isReusableChainFuel(final SpellAbility ma, final Player ai) {
+        if (ManaFilterConsolidation.isDisposableManaAbility(ma)
+                || ManaFilterConsolidation.hasManaActivationCost(ma)
+                || ManaFilterConsolidation.getManaProducedAmount(ma) <= 0) {
+            return false;
+        }
+        return isCurrentlyAvailableForNestedActivation(ai, ma, null);
+    }
+
+    /** Multi-mana colorless rocks first, so Sol Ring is tried before a single land that cannot leave {C}. */
+    static int compareChainFuel(final SpellAbility a, final SpellAbility b) {
+        final ManaSourceTraits ta = ManaSourceTraits.of(a);
+        final ManaSourceTraits tb = ManaSourceTraits.of(b);
+        if (ta.multiManaProducer != tb.multiManaProducer) {
+            return ta.multiManaProducer ? -1 : 1;
+        }
+        if (ta.producesOnlyColorless != tb.producesOnlyColorless) {
+            return ta.producesOnlyColorless ? -1 : 1;
+        }
+        return Integer.compare(tb.producedAmount, ta.producedAmount);
+    }
+
+    /**
+     * Color the any-mana filter should add so one mana pays the combo land. Prefers a color the spell
+     * also needs ({@code {G}} for Wooded Bastion into {@code {1}{G}{G}}).
+     */
+    static byte colorAnyFilterFeedsCombo(final SpellAbility anyFilter, final SpellAbility combo,
+            final ManaCostBeingPaid cost) {
+        if (anyFilter.getManaPart() == null) {
+            return 0;
+        }
+        byte fallback = 0;
+        for (final byte color : MagicColor.WUBRG) {
+            if (!singleManaPaysComboActivation(combo, color)) {
+                continue;
+            }
+            if (colorPaysUnpaidSpellShard(cost, color)) {
+                return color;
+            }
+            if (fallback == 0) {
+                fallback = color;
+            }
+        }
+        return fallback;
+    }
+
+    /** True when one mana of {@code color} pays the combo land's whole activation ({@code {G/W}}, not {@code {1}}). */
+    static boolean singleManaPaysComboActivation(final SpellAbility combo, final byte color) {
+        if (combo.getPayCosts() == null || combo.getPayCosts().getCostMana() == null) {
+            return false;
+        }
+        final ManaCost activation = combo.getPayCosts().getCostMana().getManaCostFor(combo);
+        if (activation.getGenericCost() > 0 || activation.getCMC() != 1) {
+            return false;
+        }
+        boolean sawShard = false;
+        for (final ManaCostShard shard : activation) {
+            sawShard = true;
+            if (color == 0 || !shard.canBePaidWithManaOfColor(color)) {
+                return false;
+            }
+        }
+        return sawShard;
+    }
+
+    static boolean colorPaysUnpaidSpellShard(final ManaCostBeingPaid cost, final byte color) {
+        for (final ManaCostShard shard : cost.getDistinctShards()) {
+            if (shard.isGeneric() || shard == ManaCostShard.COLORLESS || shard.isPhyrexian()
+                    || cost.getUnpaidShards(shard) <= 0) {
+                continue;
+            }
+            if (shard.canBePaidWithManaOfColor(color)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static boolean canPayViaRockAnyFilterCombo(final ManaCostBeingPaid cost, final SpellAbility sa,
+            final Player ai, final SpellAbility rock, final SpellAbility anyFilter, final SpellAbility combo,
+            final byte color, final ManaPaymentContext ctx) {
+        final AbilityManaPart mp = anyFilter.getManaPart();
+        if (mp == null) {
+            return false;
+        }
+        final String previous = mp.getExpressChoice();
+        final List<Mana> surplus = new ArrayList<>();
+        try (ReservationSnapshot snap = ReservationSnapshot.takeWithPool(ai)) {
+            mp.setExpressChoice(MagicColor.toShortString(color));
+            if (!simulateAndBankConsolidator(rock, sa, ai, cost, surplus, ctx)
+                    || !simulateAndBankConsolidator(anyFilter, sa, ai, cost, surplus, ctx)
+                    || !simulateAndBankConsolidator(combo, sa, ai, cost, surplus, ctx)) {
+                return false;
+            }
+            final ManaCostBeingPaid probe = new ManaCostBeingPaid(cost);
+            return payBankedManaTowardCost(probe, sa, ai.getManaPool(), surplus, new ArrayList<>(), true);
+        } finally {
+            mp.setExpressChoice(previous);
+        }
+    }
+
+    static boolean executeRockAnyFilterCombo(final ManaCostBeingPaid cost, final SpellAbility sa,
+            final Player ai, final SpellAbility rock, final SpellAbility anyFilter, final SpellAbility combo,
+            final byte color, final ListMultimap<ManaCostShard, SpellAbility> sourcesForShards,
+            final List<Mana> manaSpentToPay, final List<Mana> testDepositedSurplus, final boolean test,
+            final boolean effect, final ManaPool manapool, final CardCollection planOut,
+            final List<SpellAbility> paymentList, final ManaPaymentContext ctx) {
+        if (!activateAndBankConsolidator(rock, sa, ai, cost, sourcesForShards, manaSpentToPay,
+                testDepositedSurplus, test, effect, planOut, paymentList, ctx)) {
+            return false;
+        }
+        final AbilityManaPart mp = anyFilter.getManaPart();
+        if (mp != null) {
+            mp.setExpressChoice(MagicColor.toShortString(color));
+        }
+        if (!activateAndBankConsolidator(anyFilter, sa, ai, cost, sourcesForShards, manaSpentToPay,
+                testDepositedSurplus, test, effect, planOut, paymentList, ctx)
+                || !activateAndBankConsolidator(combo, sa, ai, cost, sourcesForShards, manaSpentToPay,
+                        testDepositedSurplus, test, effect, planOut, paymentList, ctx)) {
+            return false;
+        }
+        final boolean hadUnpaid = !cost.isPaid();
+        final boolean paid = payBankedManaTowardCost(cost, sa, manapool, test ? testDepositedSurplus : null,
+                manaSpentToPay, test);
+        if (hadUnpaid && paid && ctx != null) {
+            ctx.recordStep(sa, test, "  result: PAID (pool)");
+        }
+        return paid;
+    }
+
+    /** Spend banked surplus (test) and the floating pool toward {@code cost}. */
+    static boolean payBankedManaTowardCost(final ManaCostBeingPaid cost, final SpellAbility sa,
+            final ManaPool pool, final List<Mana> surplus, final List<Mana> manaSpentToPay, final boolean test) {
+        if (test && surplus != null) {
+            spendTestDepositedManaTowardCost(sa, cost, pool, surplus, manaSpentToPay);
+        }
+        pool.payManaCostFromPool(cost, sa, test, manaSpentToPay);
+        while (!cost.isPaid() && !pool.isEmpty()) {
+            boolean found = false;
+            for (final byte color : ManaAtom.MANATYPES) {
+                if (pool.tryPayCostWithColor(color, sa, cost, manaSpentToPay)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                break;
+            }
+        }
+        return cost.isPaid();
     }
 
     static boolean canPayViaSignetThenComboBanking(final ManaCostBeingPaid cost, final SpellAbility sa,
