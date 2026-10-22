@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import forge.gui.GuiBase;
 import org.tinylog.Logger;
 
 import java.io.IOException;
@@ -102,7 +103,7 @@ public final class HalcyonCatalog {
         conn.setReadTimeout(TIMEOUT_MS);
         conn.setInstanceFollowRedirects(true);
         conn.setRequestProperty("Accept", "application/json, application/octet-stream, */*");
-        conn.setRequestProperty("User-Agent", forge.util.BuildInfo.getUserAgent());
+        conn.setRequestProperty("User-Agent", GuiBase.getInterface().getUserAgent());
         conn.connect();
         return conn;
     }
