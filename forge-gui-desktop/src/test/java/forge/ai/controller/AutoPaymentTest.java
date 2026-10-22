@@ -648,6 +648,42 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals("Sungrass Prairie should be tapped", 1, countTapped(game, "Sungrass Prairie"));
     }
 
+    /**
+     * Sol Ring floats {C}{C}. One {C} pays Study Hall for {G}, that {G} pays Wooded Bastion for {G}{G},
+     * and the leftover {C} plus {G}{G} pays {1}{G}{G}. Tapping Bastion for {C} to fuel Study Hall strands
+     * the filter and leaves the second {G} unpaid.
+     */
+    @Test
+    public void solRingStudyHallAndWoodedBastionPayDoubleGreen() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Sol Ring", p);
+        addCard("Study Hall", p);
+        addCard("Wooded Bastion", p);
+        Card spell = addCardToZone("Court of Garenbrig", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = new ManaCostBeingPaid(spell.getManaCost());
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, new ManaCostBeingPaid(spell.getManaCost()), sa);
+        AssertJUnit.assertTrue("Sol Ring should float {C}{C}; actual: " + sources,
+                sources.anyMatch(c -> "Sol Ring".equals(c.getName())));
+        AssertJUnit.assertTrue("Study Hall should turn one {C} into {G}; actual: " + sources,
+                sources.anyMatch(c -> "Study Hall".equals(c.getName())));
+        AssertJUnit.assertTrue("Wooded Bastion should turn {G} into {G}{G}; actual: " + sources,
+                sources.anyMatch(c -> "Wooded Bastion".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, new ManaCostBeingPaid(spell.getManaCost()), sa));
+        AssertJUnit.assertEquals("Sol Ring should be tapped", 1, countTapped(game, "Sol Ring"));
+        AssertJUnit.assertEquals("Study Hall should be tapped", 1, countTapped(game, "Study Hall"));
+        AssertJUnit.assertEquals("Wooded Bastion should be tapped", 1, countTapped(game, "Wooded Bastion"));
+    }
+
     // --- Tap-then-sacrifice on one host (Heart of Ramos) ---
 
     private int countInZone(Game game, ZoneType zone, String name) {
