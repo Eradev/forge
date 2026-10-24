@@ -341,11 +341,23 @@ final class ManaPaymentTracer implements IHasForgeLog {
         return true;
     }
 
+    private static int planLogCountForTests;
+
+    /** Test hook: plans actually written by {@link #logPaymentPlan} since the last reset. */
+    static void resetPlanLogCountForTests() {
+        planLogCountForTests = 0;
+    }
+
+    static int getPlanLogCountForTests() {
+        return planLogCountForTests;
+    }
+
     static void logPaymentPlan(final boolean test, final String costLabel,
             final SpellAbility sa, final List<String> rawSteps, final boolean paid) {
         if (rawSteps == null || rawSteps.isEmpty()) {
             return;
         }
+        planLogCountForTests++;
         final String spellName = manaPaymentSpellLabel(sa);
         aiLog.info("MANA_PAYMENT_PLAN [{}] {} for {}{}",
                 test ? "test" : "prod", costLabel, spellName, paid ? "" : " (unpaid)");

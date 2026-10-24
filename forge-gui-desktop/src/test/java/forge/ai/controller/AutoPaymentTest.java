@@ -124,26 +124,38 @@ public class AutoPaymentTest extends SimulationTest {
 
     @Test
     public void lotusPetalCanActivateSignetForOneWhiteCost() {
+        Game preview = initAndCreateGame();
+        Player previewPlayer = preview.getPlayers().get(1);
+        SpellAbility previewSa = petalAndSignetSpell(preview, previewPlayer);
+        ManaCostBeingPaid mc = cost("1 W");
+        AssertJUnit.assertTrue(canAutoPay(preview, previewPlayer, mc, previewSa));
+
+        CardCollection sources = predictedManaSources(preview, previewPlayer, mc, previewSa);
+        AssertJUnit.assertEquals("Petal activates the Signet; nothing else is on the board: " + sources,
+                2, sources.size());
+        AssertJUnit.assertTrue("Selesnya Signet should pay {G}{W}",
+                sources.anyMatch(c -> "Selesnya Signet".equals(c.getName())));
+        AssertJUnit.assertTrue("Lotus Petal should pay the Signet's {1}",
+                sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
+
+        // Production on a fresh game: the preview deposits mana the commit would otherwise spend.
         Game game = initAndCreateGame();
         Player p = game.getPlayers().get(1);
+        SpellAbility sa = petalAndSignetSpell(game, p);
+        AssertJUnit.assertTrue("Production auto-pay should match feasibility",
+                prodAutoPay(game, p, cost("1 W"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Selesnya Signet"));
+        AssertJUnit.assertEquals("Lotus Petal should be sacrificed to activate the Signet", 0,
+                countInZone(game, ZoneType.Battlefield, "Lotus Petal"));
+    }
 
+    private SpellAbility petalAndSignetSpell(Game game, Player p) {
         addCard("Lotus Petal", p);
         addCard("Selesnya Signet", p);
         Card spell = addCardToZone("Luminarch Aspirant", p, ZoneType.Hand);
-
         game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
         game.getAction().checkStateEffects(true);
-
-        SpellAbility sa = spell.getFirstSpellAbility();
-        ManaCostBeingPaid mc = cost("1 W");
-        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
-
-        CardCollection sources = predictedManaSources(game, p, mc, sa);
-        AssertJUnit.assertTrue("Signet should pay", sources.anyMatch(c -> "Selesnya Signet".equals(c.getName())));
-        AssertJUnit.assertFalse("Lotus Petal should not pay {W} directly",
-                sources.size() == 1 && sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
-
-        AssertJUnit.assertTrue("Production auto-pay should match feasibility", prodAutoPay(game, p, mc, sa));
+        return spell.getFirstSpellAbility();
     }
 
     @Test
@@ -283,6 +295,82 @@ public class AutoPaymentTest extends SimulationTest {
                 sources.anyMatch(c -> "Study Hall".equals(c.getName())));
     }
 
+    // Chrome Mox imprinted white is the only {W}. Spare Island / Mox Sapphire pay Study Hall's {1}
+    // for {G}; Lotus Petal stays. Reflected mana must count as that color, not as generic "1".
+    @Test
+    public void studyHallBeatsLotusPetalWhenChromeMoxIsDedicatedWhiteAndBlueIsSurplus() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card chromeMox = addCard("Chrome Mox", p);
+        Card imprint = addCardToZone("Healing Salve", p, ZoneType.Exile);
+        addCards("Island", 2, p);
+        addCard("Mox Sapphire", p);
+        addCard("Study Hall", p);
+        addCard("Lotus Petal", p);
+        Card spell = addSpellOnStack(game, "Vexyr, Ich-Tekik's Heir", p);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+        chromeMox.addImprintedCard(imprint);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = new ManaCostBeingPaid(sa.getPayCosts().getCostMana().getMana());
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Study Hall should produce {G}; actual sources: " + sources,
+                sources.anyMatch(c -> "Study Hall".equals(c.getName())));
+        AssertJUnit.assertTrue("Chrome Mox should pay {W}",
+                sources.anyMatch(c -> "Chrome Mox".equals(c.getName())));
+        AssertJUnit.assertFalse("Lotus Petal should not be sacrificed for {G}",
+                sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
+        AssertJUnit.assertEquals("Chrome Mox, Study Hall, one {U}, and one spare blue source for {1}: " + sources,
+                4, sources.size());
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, new ManaCostBeingPaid(sa.getPayCosts().getCostMana().getMana()), sa));
+        int petals = 0;
+        for (Card c : game.getCardsIn(ZoneType.Battlefield)) {
+            if ("Lotus Petal".equals(c.getName())) {
+                petals++;
+            }
+        }
+        AssertJUnit.assertEquals("Lotus Petal should remain on the battlefield", 1, petals);
+    }
+
+    // The only Island is dedicated to {U} and Chrome Mox is dedicated to {W}. Study Hall has no spare
+    // fuel, so Lotus Petal still pays {G}.
+    @Test
+    public void lotusPetalBeatsStudyHallWhenChromeMoxAndIslandAreDedicated() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card chromeMox = addCard("Chrome Mox", p);
+        Card imprint = addCardToZone("Healing Salve", p, ZoneType.Exile);
+        addCard("Island", p);
+        addCard("Study Hall", p);
+        addCard("Lotus Petal", p);
+        Card spell = addSpellOnStack(game, "Vexyr, Ich-Tekik's Heir", p);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+        chromeMox.addImprintedCard(imprint);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = new ManaCostBeingPaid(sa.getPayCosts().getCostMana().getMana());
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Lotus Petal should pay {G}; actual sources: " + sources,
+                sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
+        AssertJUnit.assertTrue("Chrome Mox should pay {W}",
+                sources.anyMatch(c -> "Chrome Mox".equals(c.getName())));
+        AssertJUnit.assertTrue("Island should pay {U}",
+                sources.anyMatch(c -> "Island".equals(c.getName())));
+        AssertJUnit.assertFalse("Study Hall must not tap the only Island",
+                sources.anyMatch(c -> "Study Hall".equals(c.getName())));
+    }
+
     // Glacial Fortress can pay {U} directly; using it as Study Hall fuel for {B} still needs Petal for {U}.
     @Test
     public void studyHallNotUsedWhenDualIsNeededForOtherColorWithPetal() {
@@ -340,9 +428,10 @@ public class AutoPaymentTest extends SimulationTest {
                 sources.anyMatch(c -> "Plains".equals(c.getName())));
         AssertJUnit.assertTrue("Lotus Petal should pay {G}",
                 sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
-        AssertJUnit.assertTrue("Reliquary Tower or Study Hall {C} should pay {1}",
-                sources.anyMatch(c -> "Reliquary Tower".equals(c.getName())
-                        || "Study Hall".equals(c.getName())));
+        final boolean towerPays = sources.anyMatch(c -> "Reliquary Tower".equals(c.getName()));
+        final boolean hallPays = sources.anyMatch(c -> "Study Hall".equals(c.getName()));
+        AssertJUnit.assertTrue("Exactly one of Study Hall {C} or Reliquary Tower pays {1}; actual: " + sources,
+                towerPays ^ hallPays);
 
         AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1 W G"), sa));
         AssertJUnit.assertEquals("Lotus Petal should be sacrificed for {G}", 0,
@@ -413,10 +502,13 @@ public class AutoPaymentTest extends SimulationTest {
         CardCollection sources = predictedManaSources(game, p, mc, sa);
         AssertJUnit.assertTrue("Lotus Petal should pay {R}; actual sources: " + sources,
                 sources.anyMatch(c -> "Lotus Petal".equals(c.getName())));
-        // Bad plan tapped Jet+Hall+Swamp+Petal (filter for {R}, Petal for {1}). Good plan is Petal for
-        // {R}, Jet/Swamp for {B}, and Hall {C} or Swamp/Jet for {1} — at most three sources.
-        AssertJUnit.assertTrue("Must not fund Study Hall filter then still spend Petal; actual: " + sources,
-                sources.size() <= 3);
+        AssertJUnit.assertTrue("Mox Jet should pay {B}",
+                sources.anyMatch(c -> "Mox Jet".equals(c.getName())));
+        AssertJUnit.assertTrue("Study Hall {C} should pay {1}",
+                sources.anyMatch(c -> "Study Hall".equals(c.getName())));
+        AssertJUnit.assertFalse("Swamp stays untapped; funding Study Hall's filter would need it",
+                sources.anyMatch(c -> "Swamp".equals(c.getName())));
+        AssertJUnit.assertEquals("Petal, Mox Jet, and Study Hall {C}; actual: " + sources, 3, sources.size());
 
         AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1 B R"), sa));
         AssertJUnit.assertEquals("Lotus Petal should be sacrificed for {R}", 0,
@@ -513,8 +605,14 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertTrue(score > 0);
         Game simGame = sim.getSimulatedGameState();
 
-        AssertJUnit.assertNotNull(findSpellCard(simGame, "Arcus Acolyte"));
-        AssertJUnit.assertNotNull("Lotus Petal should not be sacrificed", findSpellCard(simGame, "Lotus Petal"));
+        Card acolyte = findSpellCard(simGame, "Arcus Acolyte");
+        AssertJUnit.assertNotNull(acolyte);
+        AssertJUnit.assertEquals("Arcus Acolyte should resolve", ZoneType.Battlefield, acolyte.getZone().getZoneType());
+        Card petal = findSpellCard(simGame, "Lotus Petal");
+        AssertJUnit.assertNotNull(petal);
+        AssertJUnit.assertEquals("Lotus Petal should stay on the battlefield",
+                ZoneType.Battlefield, petal.getZone().getZoneType());
+        AssertJUnit.assertEquals("Wastes should pay the Signet's {1}", 1, countTapped(simGame, "Wastes"));
         AssertJUnit.assertEquals("Signet should be tapped", 1, countTapped(simGame, "Selesnya Signet"));
     }
 
@@ -612,10 +710,9 @@ public class AutoPaymentTest extends SimulationTest {
     }
 
     /**
-     * The chained Signet's surplus must spend the color the spell can't use: for {1}{G}{G}, Selesnya
-     * Signet's {W} (not its {G}) funds Sungrass Prairie, leaving G + G W to pay the spell.
-     * Production must make the same choice from the real mana pool, or Auto-pay fails after the preview
-     * promised the chain.
+     * Sungrass Prairie adds {@code {G}{W}}, the same shape as the Signet. For {@code {1}{G}{G}} the
+     * Signet's {@code {W}} must pay Prairie: leftover {@code {G}} plus Prairie's {@code {G}{W}} is two
+     * green and one white. Spending the Signet's {@code {G}} instead leaves only one green.
      */
     @Test
     public void chainedSignetSpendsUnneededColorOnSecondActivation() {
@@ -1068,6 +1165,7 @@ public class AutoPaymentTest extends SimulationTest {
         String prevPlan = System.getProperty("forge.debugManaPayment.plan");
         try {
             System.setProperty("forge.debugManaPayment.plan", "true");
+            ComputerUtilMana.resetPaymentPlanLogCountForTests();
             final CardCollection[] sources = new CardCollection[1];
             p.runWithController(() -> sources[0] = ComputerUtilMana.getManaSourcesToPayCostForPaymentPrompt(
                     new ManaCostBeingPaid(mc), equip, p, false),
@@ -1075,6 +1173,8 @@ public class AutoPaymentTest extends SimulationTest {
             AssertJUnit.assertNotNull("Equip Auto preview should succeed", sources[0]);
             AssertJUnit.assertTrue("Plains should be in Equip payment plan sources",
                     sources[0].anyMatch(c -> "Plains".equals(c.getName())));
+            AssertJUnit.assertTrue("Equip Auto preview should log a payment plan",
+                    ComputerUtilMana.getPaymentPlanLogCountForTests() > 0);
         } finally {
             if (prevPlan == null) {
                 System.clearProperty("forge.debugManaPayment.plan");
@@ -1275,6 +1375,7 @@ public class AutoPaymentTest extends SimulationTest {
         String prevPlan = System.getProperty("forge.debugManaPayment.plan");
         try {
             System.setProperty("forge.debugManaPayment.plan", "true");
+            ComputerUtilMana.resetPaymentPlanLogCountForTests();
             final CardCollection[] sources = new CardCollection[1];
             p.runWithController(() -> sources[0] = ComputerUtilMana.getManaSourcesToPayCostForPaymentPrompt(
                     new ManaCostBeingPaid(mc), sa, p, false),
@@ -1283,6 +1384,8 @@ public class AutoPaymentTest extends SimulationTest {
             AssertJUnit.assertFalse("Preview should list cards Auto would tap", sources[0].isEmpty());
             AssertJUnit.assertTrue("Forest should be in payment preview",
                     sources[0].anyMatch(c -> "Forest".equals(c.getName())));
+            AssertJUnit.assertTrue("Payment-prompt preview should log a plan",
+                    ComputerUtilMana.getPaymentPlanLogCountForTests() > 0);
         } finally {
             if (prevPlan == null) {
                 System.clearProperty("forge.debugManaPayment.plan");
@@ -1308,7 +1411,10 @@ public class AutoPaymentTest extends SimulationTest {
         String prevPlan = System.getProperty("forge.debugManaPayment.plan");
         try {
             System.setProperty("forge.debugManaPayment.plan", "true");
+            ComputerUtilMana.resetPaymentPlanLogCountForTests();
             AssertJUnit.assertTrue(ComputerUtilMana.canPayManaCost(new ManaCostBeingPaid(mc), sa, p, false));
+            AssertJUnit.assertEquals("Hand feasibility must not log a payment plan", 0,
+                    ComputerUtilMana.getPaymentPlanLogCountForTests());
         } finally {
             if (prevPlan == null) {
                 System.clearProperty("forge.debugManaPayment.plan");
@@ -1975,17 +2081,29 @@ public class AutoPaymentTest extends SimulationTest {
         assertProductionPayment(game, p, cost("R W"), sa);
     }
 
-    // Soft CMC cap: skip dry-run for 5-drop when total mana < CMC; still probe low-CMC spells.
+    // Soft CMC cap: a red 6-drop is skipped for total mana, while {1}{W} is still dry-run.
+    // The 6-drop must be red: a blue spell is skipped by the missing-color gate even with the cap off.
     @Test
     public void castabilityProbeSoftCmcCapSkipsWhenTotalManaInsufficient() {
+        final int cheapOnly = dryRunsPayingHelix(false);
+        final int withDragon = dryRunsPayingHelix(true);
+        AssertJUnit.assertTrue("Divine Favor should still be dry-run", cheapOnly >= 1);
+        AssertJUnit.assertEquals("Shivan Dragon is red, so only the CMC cap can skip its dry-run",
+                cheapOnly, withDragon);
+    }
+
+    /** Mountain, Plains, Boros Signet, Divine Favor, and Lightning Helix. Dragon is optional. */
+    private int dryRunsPayingHelix(final boolean includeShivanDragon) {
         Game game = initAndCreateGame();
         Player p = game.getPlayers().get(1);
 
         addCard("Mountain", p);
         addCard("Plains", p);
         addCard("Boros Signet", p);
-        addCardToZone("Air Elemental", p, ZoneType.Hand);
         addCardToZone("Divine Favor", p, ZoneType.Hand);
+        if (includeShivanDragon) {
+            addCardToZone("Shivan Dragon", p, ZoneType.Hand);
+        }
         Card spell = addCardToZone("Lightning Helix", p, ZoneType.Hand);
 
         game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
@@ -1994,8 +2112,8 @@ public class AutoPaymentTest extends SimulationTest {
         SpellAbility sa = spell.getFirstSpellAbility();
         AssertJUnit.assertTrue(canAutoPay(game, p, cost("R W"), sa));
         final int dryRuns = castabilityProbeDryRunsForPaymentPrompt(game, p, cost("R W"), sa);
-        AssertJUnit.assertTrue("High-CMC spell should be skipped; low-CMC spell still probed", dryRuns >= 1);
         assertProductionPayment(game, p, cost("R W"), sa);
+        return dryRuns;
     }
 
     // Canopy Vista produces {W} directly; Study Hall should not be used for a lone {W} pip.
@@ -2091,8 +2209,16 @@ public class AutoPaymentTest extends SimulationTest {
         game.getAction().checkStateEffects(true);
 
         SpellAbility sa = spell.getFirstSpellAbility();
+        sa.setActivatingPlayer(p);
+        ManaCostBeingPaid mc = cost("R R");
+        ComputerUtilMana.ManaAvailabilityEstimate battlefield = ComputerUtilMana.estimateAvailableMana(p, true);
+        AssertJUnit.assertEquals("Battlefield scan is only the Mountain", 1, battlefield.total);
+        AssertJUnit.assertFalse("Quick sufficiency must not cover {R}{R} from the Mountain alone",
+                battlefield.canCover(mc, sa));
+        AssertJUnit.assertEquals("Spirit Guide in hand counts toward the optimistic total",
+                2, ComputerUtilMana.estimateMaxManaAvailableForTests(p));
         AssertJUnit.assertTrue("Mountain + Simian Spirit Guide should pay {R}{R}",
-                canAutoPay(game, p, cost("R R"), sa));
+                canAutoPay(game, p, mc, sa));
     }
 
     // Pure generic: spend colorless land before a colored basic (unless hand needs dedicated {C}).
