@@ -341,6 +341,18 @@ final class ManaPaymentExecution {
         if (payCosts != null && payCosts.hasManaCost()) {
             return false;
         }
+        // ManaReflected (Chrome Mox) stores Produced as "1". canProduce only sees that generic
+        // token, so the imprinted color was invisible here: the only white source did not count as
+        // cover for {W}, and Study Hall lost to Lotus Petal even with spare colored fuel.
+        if (ma.getApi() == ApiType.ManaReflected) {
+            for (final String color : CardUtil.getReflectableManaColors(ma)) {
+                final byte atom = ManaAtom.fromName(color);
+                if (atom != 0 && shard.canBePaidWithManaOfColor(atom)) {
+                    return true;
+                }
+            }
+            return false;
+        }
         final AbilityManaPart mp = ma.getManaPart();
         if (mp == null) {
             return false;
