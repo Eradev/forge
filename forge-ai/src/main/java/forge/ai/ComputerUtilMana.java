@@ -609,6 +609,24 @@ public class ComputerUtilMana {
         return CastabilityProbe.getDryRunCountForTests();
     }
 
+    /** Test hook: reset the count of payment plans actually logged. */
+    public static void resetPaymentPlanLogCountForTests() {
+        ManaPaymentTracer.resetPlanLogCountForTests();
+    }
+
+    /** Test hook: payment plans logged since the last reset. */
+    public static int getPaymentPlanLogCountForTests() {
+        return ManaPaymentTracer.getPlanLogCountForTests();
+    }
+
+    /**
+     * Test hook: optimistic mana total, including hand-activatable sources such as Spirit Guides.
+     * The cheap battlefield estimate does not include those.
+     */
+    public static int estimateMaxManaAvailableForTests(final Player ai) {
+        return estimateMaxManaAvailable(ai, true, ManaPaymentContext.outer());
+    }
+
     /** Test hook: reset all mana-evaluation work counters. */
     public static void resetManaPaymentEvalStatsForTests() {
         ManaPaymentEvalStats.reset();
