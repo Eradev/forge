@@ -652,7 +652,10 @@ final class ManaPaymentExecution {
         if (remaining >= 2 && t.disposable && t.producedAmount < remaining && altFlags.hasMultiManaDisposableAlt) {
             score += 50;
         }
-        if (t.anyMultiManaProducer && t.producedAmount > remaining && altFlags.hasDirectColoredAlt) {
+        // Overproduction vs this shard alone is fine when the activation can finish the whole cost
+        // (Astral Cornucopia / combo-Any for {2}{U}); only penalize when mana is truly left over.
+        if (t.anyMultiManaProducer && t.producedAmount > remaining && altFlags.hasDirectColoredAlt
+                && t.producedAmount < countUnpaidPips(cost)) {
             score += 25 * (t.producedAmount - remaining);
         }
         if (isDirectColoredMultiProducer(chosen, toPay) && t.producedAmount > remaining
@@ -1611,6 +1614,63 @@ final class ManaPaymentExecution {
     }
 
     /**
+     * Free reusable combo-Any / Any×N multi (Firemind Vessel, Astral Cornucopia, Starlight Cairn) that can
+     * finish the entire remaining cost in one activation. Prefer that over paying a colored pip with a dual
+     * and only then spending the multi on leftover generic (which also paints generic as {@code W}).
+     */
+    static SpellAbility pickFreeFlexibleMultiThatPaysEntireCost(final ManaCostBeingPaid cost,
+            final SpellAbility sa, final Player ai, final ManaCostShard toPay, final List<SpellAbility> valid,
+            final boolean test, final ManaPaymentContext ctx) {
+        final int unpaid = countUnpaidPips(cost);
+        if (unpaid <= 1 || valid == null || valid.isEmpty()) {
+            return null;
+        }
+        SpellAbility best = null;
+        int bestAmount = Integer.MAX_VALUE;
+        for (final SpellAbility ma : CastabilityProbe.capCandidates(valid)) {
+            final ManaSourceTraits t = ManaSourceTraits.of(ma);
+            if (t.disposable || t.hasManaActivationCost || t.hasCostlySideEffect || t.manaReserveHost) {
+                continue;
+            }
+            if (ManaFilterConsolidation.isCombatCapableManaCreature(ma)) {
+                continue;
+            }
+            if (!t.isMultiManaCombo() && !t.anyMultiManaProducer) {
+                continue;
+            }
+            final int prod = t.isMultiManaCombo() ? t.comboAmount : t.producedAmount;
+            if (prod < unpaid || prod >= bestAmount) {
+                continue;
+            }
+            if (!flexibleMultiPaysEntireCost(cost, sa, ai, toPay, ma)) {
+                continue;
+            }
+            final PaymentImpact impact = probePaymentImpact(cost, sa, ai, toPay, ma, valid, null, test, ctx);
+            if (impact != null && impact.keepsRest) {
+                bestAmount = prod;
+                best = ma;
+            }
+        }
+        return best == null ? null : refreshExpressChoice(cost, sa, ai, toPay, best);
+    }
+
+    /** True when applying {@code ma}'s predicted mana leaves {@code cost} fully paid. */
+    static boolean flexibleMultiPaysEntireCost(final ManaCostBeingPaid cost, final SpellAbility sa,
+            final Player ai, final ManaCostShard toPay, final SpellAbility ma) {
+        final ManaCostBeingPaid probe = new ManaCostBeingPaid(cost);
+        refreshExpressChoice(cost, sa, ai, toPay, ma);
+        try {
+            applyChosenPaymentToCostProbe(probe, ma, ai, toPay);
+        } finally {
+            final AbilityManaPart mp = ma.getManaPart();
+            if (mp != null) {
+                mp.clearExpressChoice();
+            }
+        }
+        return probe.isPaid();
+    }
+
+    /**
      * {@link #evaluatePaymentImpact} with the reservation memory rolled back afterwards; {@code null}
      * when {@code cand} fails {@link #passesManaPaymentReservationChecks}.
      */
@@ -1640,6 +1700,12 @@ final class ManaPaymentExecution {
         if ((ctx != null && ctx.inFilterActivationProbe) || (ctx != null && ctx.depth > 1)) {
             final SpellAbility first = pickFirstReservedManaChoice(ai, sa, valid);
             return first == null ? null : refreshExpressChoice(cost, sa, ai, toPay, first);
+        }
+
+        final SpellAbility entireCostMulti = pickFreeFlexibleMultiThatPaysEntireCost(cost, sa, ai, toPay, valid,
+                test, ctx);
+        if (entireCostMulti != null) {
+            return entireCostMulti;
         }
 
         final SpellAbility directMulti = pickDirectColoredMultiWhenSinglePipsInsufficient(cost, sa, ai, toPay, valid,
