@@ -897,6 +897,64 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals("Study Hall should stay untapped", 0, countTapped(game, "Study Hall"));
     }
 
+    /**
+     * Free Combo AnyDifferent×2 must cover {@code {1}{U}} alone rather than tapping Island for {U}
+     * and the vessel for generic (which would also leave Island tapped needlessly).
+     */
+    @Test
+    public void freeMultiManaComboCoversColoredAndGenericAlone() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card vessel = addCard("Firemind Vessel", p);
+        vessel.setTapped(false);
+        addCard("Island", p);
+        Card spell = addCardToZone("Arcane Signet", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("1 U"), sa));
+
+        CardCollection sources = predictedManaSources(game, p, cost("1 U"), sa);
+        AssertJUnit.assertEquals("Only Firemind Vessel should pay {1}{U}", 1, sources.size());
+        AssertJUnit.assertEquals("Firemind Vessel", sources.get(0).getName());
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1 U"), sa));
+        AssertJUnit.assertTrue(vessel.isTapped());
+        AssertJUnit.assertEquals("Island should stay untapped", 0, countTapped(game, "Island"));
+    }
+
+    /**
+     * Free Any×3 (Astral Cornucopia) must cover {@code {2}{U}} alone rather than dual for {U} then
+     * Cornucopia for generic painted as white — Starlight Cairn / metalcraft-style case.
+     */
+    @Test
+    public void freeAnyMultiCoversTwoGenericAndBlueAlone() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card cornucopia = addCard("Astral Cornucopia", p);
+        cornucopia.addCounterInternal(CounterEnumType.CHARGE, 3, p, false, null, null);
+        addCard("Hinterland Harbor", p);
+        Card spell = addCardToZone("Arcane Signet", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("2 U"), sa));
+
+        CardCollection sources = predictedManaSources(game, p, cost("2 U"), sa);
+        AssertJUnit.assertEquals("Only Astral Cornucopia should pay {2}{U}", 1, sources.size());
+        AssertJUnit.assertEquals("Astral Cornucopia", sources.get(0).getName());
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("2 U"), sa));
+        AssertJUnit.assertTrue(cornucopia.isTapped());
+        AssertJUnit.assertEquals("Hinterland Harbor should stay untapped", 0, countTapped(game, "Hinterland Harbor"));
+    }
+
     @Test
     public void paymentPlanPreviewIncludesPetalSacrificedForSignetActivation() {
         Game game = initAndCreateGame();
