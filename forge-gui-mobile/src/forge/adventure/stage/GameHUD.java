@@ -26,6 +26,7 @@ import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane.ScrollPaneStyle;
 import com.badlogic.gdx.scenes.scene2d.ui.Touchpad;
 import com.badlogic.gdx.scenes.scene2d.utils.ActorGestureListener;
 import com.badlogic.gdx.scenes.scene2d.utils.ChangeListener;
+import com.badlogic.gdx.scenes.scene2d.utils.ClickListener;
 import com.badlogic.gdx.scenes.scene2d.utils.TextureRegionDrawable;
 import com.badlogic.gdx.utils.Align;
 import com.badlogic.gdx.utils.Array;
@@ -94,6 +95,9 @@ public class GameHUD extends Stage {
     private final Array<TextraButton> dialogButtonMap = new Array<>();
     private final Array<TextraButton> abilityButtonMap = new Array<>();
     private final Array<NavArrowActor> hiddenEnemyChevrons = new Array<>();
+    private final NavArrowActor closestEnemyPointer = new NavArrowActor();
+    private float closestEnemyPointerTimer;
+    private static final float CLOSEST_ENEMY_POINTER_DURATION = 5f;
     private final Vector2 chevronStageCoordinates = new Vector2();
     private final Vector2 chevronNavigation = new Vector2();
     private final Vector3 playerProjectedCoordinates = new Vector3();
@@ -176,10 +180,20 @@ public class GameHUD extends Stage {
         enemyCounterText.setColor(Color.BLACK);
         enemyCounterText.skipToTheEnd();
         enemyCounterText.setVisible(false);
+        enemyCounterText.setTouchable(Touchable.enabled);
 
         ScrollPaneStyle paperStyle = Controls.getSkin().get("paper", ScrollPaneStyle.class);
         enemyCounterBackground = new Image(paperStyle.background);
         enemyCounterBackground.setVisible(false);
+        enemyCounterBackground.setTouchable(Touchable.enabled);
+        ClickListener pointToClosestEnemyListener = new ClickListener() {
+            @Override
+            public void clicked(InputEvent event, float x, float y) {
+                pointToClosestEnemy();
+            }
+        };
+        enemyCounterBackground.addListener(pointToClosestEnemyListener);
+        enemyCounterText.addListener(pointToClosestEnemyListener);
         AdventurePlayer.current().onLifeChange(() -> {
             String effect = "{EMERGE}";
             String effectEnd = "{ENDEMERGE}";
@@ -202,10 +216,14 @@ public class GameHUD extends Stage {
         AdventurePlayer.current().onShardsChange(() -> shards.restart("[%95][+Shards]{EMERGE} " + AdventurePlayer.current().getShards() + "{ENDEMERGE}"));
         AdventurePlayer.current().onGoldChange(() -> money.restart("[%95][+Gold]{EMERGE} " + AdventurePlayer.current().getGold() + "{ENDEMERGE}"));
         AdventurePlayer.current().onEquipmentChanged(this::updateAbility);
+        closestEnemyPointer.setTouchable(Touchable.disabled);
+        closestEnemyPointer.setVisible(false);
+
         addActor(ui);
         addActor(miniMapPlayer);
         addActor(enemyCounterBackground);
         addActor(enemyCounterText);
+        addActor(closestEnemyPointer);
         console = new Console();
         console.setBounds(0, GuiBase.isAndroid() ? getHeight() : 0, getWidth(), getHeight() / 2);
         console.setVisible(false);
@@ -347,6 +365,7 @@ public class GameHUD extends Stage {
                     && !(Controls.actorContainsVector(exitToWorldMapActor, touchDownCoords)) //not inside exit button
                     && !(Controls.actorContainsVector(bookmarkActor, touchDownCoords)) //not inside bookmark button
                     && !(Controls.actorContainsVector(abilityButtonMap, touchDownCoords)) //not inside abilityButtonMap
+                    && !(enemyCounterBackground.isVisible() && Controls.actorContainsVector(enemyCounterBackground, touchDownCoords)) //not inside remaining enemies
                     && (Controls.actorContainsVector(ui, touchDownCoords)) //inside display bounds
                     && pointer < 1) { //not more than 1 pointer
                 touchpad.setBounds(touchDownCoords.x - TOUCHPAD_SCALE / 2, touchDownCoords.y - TOUCHPAD_SCALE / 2, TOUCHPAD_SCALE, TOUCHPAD_SCALE);
@@ -362,6 +381,7 @@ public class GameHUD extends Stage {
     public void draw() {
         act(Gdx.graphics.getDeltaTime()); //act the Hud
         updateHiddenEnemyChevrons();
+        updateClosestEnemyPointer();
         super.draw(); //draw the Hud
     }
 
@@ -465,7 +485,61 @@ public class GameHUD extends Stage {
         } else {
             enemyCounterText.setVisible(false);
             enemyCounterBackground.setVisible(false);
+            clearClosestEnemyPointer();
         }
+    }
+
+    private void pointToClosestEnemy() {
+        if (!enemyCounterBackground.isVisible()
+                || !MapStage.getInstance().isInMap()
+                || MapStage.getInstance().getRemainingEnemyCount() <= 0) {
+            return;
+        }
+        EnemySprite closest = findClosestRemainingEnemy();
+        if (closest == null) {
+            clearClosestEnemyPointer();
+            return;
+        }
+        closestEnemyPointerTimer = CLOSEST_ENEMY_POINTER_DURATION;
+        positionChevron(closestEnemyPointer, closest, 0);
+    }
+
+    private void clearClosestEnemyPointer() {
+        closestEnemyPointerTimer = 0f;
+        closestEnemyPointer.setVisible(false);
+    }
+
+    private EnemySprite findClosestRemainingEnemy() {
+        EnemySprite closest = null;
+        float bestDist2 = Float.MAX_VALUE;
+        Vector2 playerPos = MapStage.getInstance().player.pos();
+        for (EnemySprite enemy : MapStage.getInstance().enemies) {
+            if (enemy.getStage() == null || enemy.defeatDialog != null) {
+                continue;
+            }
+            float dist2 = enemy.pos().dst2(playerPos);
+            if (dist2 < bestDist2) {
+                bestDist2 = dist2;
+                closest = enemy;
+            }
+        }
+        return closest;
+    }
+
+    private void updateClosestEnemyPointer() {
+        if (closestEnemyPointerTimer <= 0f || hidden || !MapStage.getInstance().isInMap()) {
+            clearClosestEnemyPointer();
+            return;
+        }
+
+        closestEnemyPointerTimer -= Gdx.graphics.getDeltaTime();
+        EnemySprite closest = findClosestRemainingEnemy();
+        if (closest == null) {
+            clearClosestEnemyPointer();
+            return;
+        }
+
+        positionChevron(closestEnemyPointer, closest, 0);
     }
 
     private void hideHiddenEnemyChevrons() {
