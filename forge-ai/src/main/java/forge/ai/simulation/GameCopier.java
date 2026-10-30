@@ -53,6 +53,11 @@ public class GameCopier {
     private GameSnapshot snapshot = null;
     /** Copy the spells on the stack too (see {@link GameSimulator#COPY_STACK}); decided per copier. */
     private boolean copyStack = GameSimulator.COPY_STACK;
+    /**
+     * When true, non-AI players become heuristic AIs in the copy (no {@link AIOption#USE_FULL_SIMULATION}).
+     * Flat MC playouts need that; SpellAbilityPicker copies keep the default (false) so recursive search works.
+     */
+    private boolean heuristicStandIns = false;
     private final java.util.Map<SpellAbility, SpellAbility> stackMap = new java.util.HashMap<>();
 
     public GameCopier(Game origGame) {
@@ -65,6 +70,15 @@ public class GameCopier {
     /** Makes {@link #makeCopy} copy the spells on the stack, so that a decision with a spell on the stack can be simulated. */
     public GameCopier withStack(final boolean copy) {
         this.copyStack = copy;
+        return this;
+    }
+
+    /**
+     * Use heuristic AIs for human stand-ins. Required for Flat MC: otherwise opponent-lookahead playouts
+     * enter {@link SpellAbilityPicker}, which copies the game again and recurses until the match freezes.
+     */
+    public GameCopier withHeuristicStandIns() {
+        this.heuristicStandIns = true;
         return this;
     }
 
@@ -245,8 +259,10 @@ public class GameCopier {
         RegisteredPlayer clone = new RegisteredPlayer(p.getDeck());
         LobbyPlayer lp = p.getPlayer();
         if (!(lp instanceof LobbyPlayerAi)) {
-            // TODO should probably also override them if they're normal AI
-            lp = new LobbyPlayerAi(p.getPlayer().getName(), Sets.newHashSet(AIOption.USE_FULL_SIMULATION));
+            // SpellAbilityPicker needs USE_FULL_SIMULATION so recursive search continues for the stand-in.
+            // Flat MC must not: playOut would call SpellAbilityPicker → GameSimulator → copy → … forever.
+            lp = new LobbyPlayerAi(p.getPlayer().getName(),
+                    heuristicStandIns ? null : Sets.newHashSet(AIOption.USE_FULL_SIMULATION));
         }
         clone.setPlayer(lp);
         return clone;
@@ -368,7 +384,9 @@ public class GameCopier {
         }
     }
 
-    private static PaperCard hidden_info_card = new PaperCard(CardRules.fromScript(Lists.newArrayList("Name:hidden", "Types:Artifact", "Oracle:")), "", CardRarity.Common);
+    // ManaCost is required so CardFace.assignMissingFields does not warn ("hidden has neither ManaCost nor Color").
+    private static PaperCard hidden_info_card = new PaperCard(CardRules.fromScript(Lists.newArrayList(
+            "Name:hidden", "ManaCost:no cost", "Types:Artifact", "Oracle:")), "", CardRarity.Common);
     private static final boolean PRUNE_HIDDEN_INFO = false;
     private static final boolean USE_FROM_PAPER_CARD = true;
     private Card createCardCopy(Game newGame, Player newOwner, Card c, Player aiPlayer) {

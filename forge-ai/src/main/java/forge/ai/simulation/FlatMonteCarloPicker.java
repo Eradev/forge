@@ -1594,6 +1594,7 @@ public final class FlatMonteCarloPicker {
             return;
         }
         final PlayerControllerAi pc = (PlayerControllerAi) simAi.getController();
+        pc.getAi().setUseSimulation(null);
         for (int i = 0; i < maxPlays && !simGame.isGameOver() && !simGame.getStack().isEmpty(); i++) {
             AITimeoutTracker.check();
             checkRolloutDeadline();
@@ -1612,6 +1613,9 @@ public final class FlatMonteCarloPicker {
             return;
         }
         final PlayerControllerAi pc = (PlayerControllerAi) simAi.getController();
+        // Must stay on the heuristic path. A stand-in left in USE_FULL_SIMULATION enters
+        // SpellAbilityPicker → GameSimulator → copy → playOut and freezes the match.
+        pc.getAi().setUseSimulation(null);
         for (int i = 0; i < maxPlays && !simGame.isGameOver(); i++) {
             AITimeoutTracker.check();
             checkRolloutDeadline();

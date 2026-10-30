@@ -79,10 +79,13 @@ public class GameSimulator {
      * verifies that the copy scores identically. {@link #getScoreForOrigGame()} is therefore null for such a
      * simulator, and it is meant to be used with {@link #applySpellAbility(SpellAbility)} and
      * {@link #getSimulatedGameState()} only.
+     * <p>
+     * Human players become heuristic AIs (not {@link AIOption#USE_FULL_SIMULATION}) so playouts cannot recurse
+     * through {@link SpellAbilityPicker}.
      */
     public GameSimulator(Game origGame, Player origAiPlayer) {
         this.controller = new SimulationController(new Score(0), 0);
-        copier = new GameCopier(origGame);
+        copier = new GameCopier(origGame).withHeuristicStandIns();
         simGame = copier.makeCopy(null, origAiPlayer);
 
         aiPlayer = copier.find(origAiPlayer);
@@ -93,7 +96,7 @@ public class GameSimulator {
     /** As the lightweight constructor, optionally copying the spells on the stack (for decisions made in response to one). */
     public GameSimulator(Game origGame, Player origAiPlayer, boolean copyStack) {
         this.controller = new SimulationController(new Score(0), 0);
-        copier = new GameCopier(origGame).withStack(copyStack);
+        copier = new GameCopier(origGame).withStack(copyStack).withHeuristicStandIns();
         simGame = copier.makeCopy(null, origAiPlayer);
 
         aiPlayer = copier.find(origAiPlayer);
