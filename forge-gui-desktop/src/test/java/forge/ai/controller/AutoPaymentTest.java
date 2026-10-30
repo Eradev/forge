@@ -1052,6 +1052,67 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals("Hinterland Harbor should stay untapped", 0, countTapped(game, "Hinterland Harbor"));
     }
 
+    /**
+     * Tolarian Academy with two artifacts adds {U}{U} and pays {@code {1}{U}} alone. A 1-mana blue
+     * source (Island here, Command Tower in play) must stay untapped.
+     */
+    @Test
+    public void tolarianAcademyPaysOneBlueAlone() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card academy = addCard("Tolarian Academy", p);
+        addCard("Ornithopter", p);
+        addCard("Ornithopter", p);
+        addCard("Island", p);
+        Card spell = addCardToZone("Arcane Signet", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("1 U"), sa));
+
+        CardCollection sources = predictedManaSources(game, p, cost("1 U"), sa);
+        AssertJUnit.assertEquals("Only Tolarian Academy should pay {1}{U}; actual: " + sources,
+                1, sources.size());
+        AssertJUnit.assertEquals("Tolarian Academy", sources.get(0).getName());
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1 U"), sa));
+        AssertJUnit.assertTrue(academy.isTapped());
+        AssertJUnit.assertEquals("Island should stay untapped", 0, countTapped(game, "Island"));
+    }
+
+    /**
+     * Academy that adds only one blue cannot cover {@code {1}{U}} alone, so the Island is still used.
+     */
+    @Test
+    public void tolarianAcademyNeedsAnotherSourceWhenItAddsOneBlue() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Tolarian Academy", p);
+        addCard("Ornithopter", p);
+        addCard("Island", p);
+        Card spell = addCardToZone("Arcane Signet", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        AssertJUnit.assertTrue(canAutoPay(game, p, cost("1 U"), sa));
+
+        CardCollection sources = predictedManaSources(game, p, cost("1 U"), sa);
+        AssertJUnit.assertEquals("Academy and Island should both pay {1}{U}; actual: " + sources,
+                2, sources.size());
+        AssertJUnit.assertTrue(sources.anyMatch(c -> "Tolarian Academy".equals(c.getName())));
+        AssertJUnit.assertTrue(sources.anyMatch(c -> "Island".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1 U"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Tolarian Academy"));
+        AssertJUnit.assertEquals(1, countTapped(game, "Island"));
+    }
+
     @Test
     public void paymentPlanPreviewIncludesPetalSacrificedForSignetActivation() {
         Game game = initAndCreateGame();
