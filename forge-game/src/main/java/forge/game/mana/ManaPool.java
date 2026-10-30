@@ -271,6 +271,32 @@ public class ManaPool extends ManaConversionMatrix implements Iterable<Mana> {
         return floatingMana.values().size();
     }
 
+    /**
+     * Floating mana with counts, e.g. {@code W×3 U C}; a single pip is just the letter.
+     * {@code 0} when empty.
+     */
+    @Override
+    public String toString() {
+        if (floatingMana.isEmpty()) {
+            return "0";
+        }
+        final StringBuilder sb = new StringBuilder();
+        for (final byte color : ManaAtom.MANATYPES) {
+            final int n = getAmountOfColor(color);
+            if (n <= 0) {
+                continue;
+            }
+            if (sb.length() > 0) {
+                sb.append(' ');
+            }
+            sb.append(MagicColor.toShortString(color));
+            if (n > 1) {
+                sb.append('×').append(n);
+            }
+        }
+        return sb.toString();
+    }
+
     //Account for mana part of ability when undoing it
     public boolean accountFor(final AbilityManaPart ma) {
         if (ma == null) {
