@@ -670,8 +670,11 @@ final class ManaPaymentExecution {
                 && t.producedAmount < countUnpaidPips(cost)) {
             score += 25 * (t.producedAmount - remaining);
         }
+        // Same as any-multi: extra mana is not waste when it pays the rest of the cost (Academy's
+        // second {U} pays {1}). Penalize only when that mana cannot finish the unpaid pips.
         if (isDirectColoredMultiProducer(chosen, toPay) && t.producedAmount > remaining
-                && altFlags.hasSinglePipDirectColoredAlt) {
+                && altFlags.hasSinglePipDirectColoredAlt
+                && t.producedAmount < countUnpaidPips(cost)) {
             score += 25 * (t.producedAmount - remaining);
         }
         if ((toPay.isGeneric() || toPay == ManaCostShard.X)
@@ -1543,6 +1546,15 @@ final class ManaPaymentExecution {
         if (valid.isEmpty()) {
             return null;
         }
+        // One activation that finishes the whole cost (Academy for {1}{U}, Firemind Vessel, Cornucopia)
+        // beats a 1-mana source for this pip plus a second tap. Nested filter probes keep sort order.
+        if (ctx == null || (!ctx.inFilterActivationProbe && ctx.depth <= 1)) {
+            final SpellAbility entireCost = pickFreeFlexibleMultiThatPaysEntireCost(cost, sa, ai, toPay, valid,
+                    test, ctx);
+            if (entireCost != null) {
+                return entireCost;
+            }
+        }
         if (valid.size() == 1 || (ctx != null && ctx.inFilterActivationProbe) || !CastabilityProbe.shouldUse(sa, test, ctx)
                 || ((ctx == null || !ctx.paymentPromptPreview)
                         && valid.stream().noneMatch(ManaPaymentExecution::isConsolidatingCandidate))
@@ -1626,9 +1638,11 @@ final class ManaPaymentExecution {
     }
 
     /**
-     * Free reusable combo-Any / Any×N multi (Firemind Vessel, Astral Cornucopia, Starlight Cairn) that can
-     * finish the entire remaining cost in one activation. Prefer that over paying a colored pip with a dual
-     * and only then spending the multi on leftover generic (which also paints generic as {@code W}).
+     * Free reusable multi that can finish the entire remaining cost in one activation: combo-Any / Any×N
+     * (Firemind Vessel, Astral Cornucopia, Starlight Cairn) or a direct colored multi (Tolarian Academy,
+     * Gaea's Cradle). Prefer that over paying one colored pip with a 1-mana source and then tapping the
+     * multi for leftover generic. A direct colored multi is skipped when 1-mana sources of that color
+     * already cover every unpaid pip, so three Forests still pay {@code {G}{G}{G}} ahead of Cradle.
      */
     static SpellAbility pickFreeFlexibleMultiThatPaysEntireCost(final ManaCostBeingPaid cost,
             final SpellAbility sa, final Player ai, final ManaCostShard toPay, final List<SpellAbility> valid,
@@ -1637,6 +1651,7 @@ final class ManaPaymentExecution {
         if (unpaid <= 1 || valid == null || valid.isEmpty()) {
             return null;
         }
+        final int singlePip = toPay == null ? 0 : countSinglePipDirectColoredProducers(valid, toPay);
         SpellAbility best = null;
         int bestAmount = Integer.MAX_VALUE;
         for (final SpellAbility ma : CastabilityProbe.capCandidates(valid)) {
@@ -1647,7 +1662,12 @@ final class ManaPaymentExecution {
             if (ManaFilterConsolidation.isCombatCapableManaCreature(ma)) {
                 continue;
             }
-            if (!t.isMultiManaCombo() && !t.anyMultiManaProducer) {
+            final boolean directColoredMulti = toPay != null && isDirectColoredMultiProducer(ma, toPay);
+            if (!t.isMultiManaCombo() && !t.anyMultiManaProducer && !directColoredMulti) {
+                continue;
+            }
+            // Basics that already cover the whole cost stay ahead of a scaling land.
+            if (directColoredMulti && singlePip >= unpaid) {
                 continue;
             }
             final int prod = t.isMultiManaCombo() ? t.comboAmount : t.producedAmount;
@@ -1714,11 +1734,8 @@ final class ManaPaymentExecution {
             return first == null ? null : refreshExpressChoice(cost, sa, ai, toPay, first);
         }
 
-        final SpellAbility entireCostMulti = pickFreeFlexibleMultiThatPaysEntireCost(cost, sa, ai, toPay, valid,
-                test, ctx);
-        if (entireCostMulti != null) {
-            return entireCostMulti;
-        }
+        // Whole-cost multi (Academy, Vessel, Cornucopia) is chosen in chooseManaAbilityForShard
+        // before this ranking, including the castability path that does not reach here.
 
         final SpellAbility directMulti = pickDirectColoredMultiWhenSinglePipsInsufficient(cost, sa, ai, toPay, valid,
                 test, ctx);
