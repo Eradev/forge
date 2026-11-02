@@ -391,7 +391,8 @@ public class GameCopier {
         }
     }
 
-    private static PaperCard hidden_info_card = new PaperCard(CardRules.fromScript(Lists.newArrayList("Name:hidden", "Types:Artifact", "Oracle:")), "", CardRarity.Common);
+    private static PaperCard hidden_info_card = new PaperCard(CardRules.fromScript(Lists.newArrayList(
+            "Name:hidden", "ManaCost:no cost", "Types:Artifact", "Oracle:")), "", CardRarity.Common);
     private static final boolean PRUNE_HIDDEN_INFO = false;
     private static final boolean USE_FROM_PAPER_CARD = true;
     private Card createCardCopy(Game newGame, Player newOwner, Card c, Player aiPlayer) {
