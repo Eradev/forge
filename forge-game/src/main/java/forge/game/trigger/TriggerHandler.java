@@ -442,6 +442,15 @@ public class TriggerHandler {
         if (controller == null) {
             controller = regtrig.getHostCard().getController();
         }
+        // One state trigger per matching permanent.
+        if (regtrig.hasParam("PresentEach") && !(runParams.get(AbilityKey.Card) instanceof Card)) {
+            for (final Card present : regtrig.getPresentCards(regtrig.getMapParams())) {
+                final Map<AbilityKey, Object> oneCreature = AbilityKey.newMap(runParams);
+                oneCreature.put(AbilityKey.Card, present);
+                runSingleTriggerInternal(regtrig, oneCreature, controller);
+            }
+            return;
+        }
         // If the runParams contains MergedCards, it is called from GameAction.changeZone()
         if (runParams.get(AbilityKey.MergedCards) != null) {
             // Check if the trigger cares the origin is from battlefield

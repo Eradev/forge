@@ -58,18 +58,16 @@ public class TriggerAlways extends Trigger {
     /** {@inheritDoc} */
     @Override
     public void setTriggeringObjects(final SpellAbility sa, Map<AbilityKey, Object> runParams) {
-        // Lock in the permanents that made this state true. Resolution still refers to
-        // them after another ability has removed the counters or destroyed them.
-        if (hasParam("RememberPresent")) {
-            sa.setTriggeringObject(AbilityKey.Cards, getPresentCards(getMapParams()));
+        if (hasParam("PresentEach") && runParams.get(AbilityKey.Card) instanceof Card card) {
+            sa.setTriggeringObject(AbilityKey.Card, card);
         }
     }
 
     @Override
     public String getImportantStackObjects(SpellAbility sa) {
-        if (!hasParam("RememberPresent") || !sa.hasTriggeringObject(AbilityKey.Cards)) {
+        if (!hasParam("PresentEach") || !sa.hasTriggeringObject(AbilityKey.Card)) {
             return "";
         }
-        return sa.getTriggeringObject(AbilityKey.Cards).toString();
+        return sa.getTriggeringObject(AbilityKey.Card).toString();
     }
 }
