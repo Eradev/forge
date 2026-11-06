@@ -94,7 +94,8 @@ final class ManaAbilitySort {
         return genericColorPreference(false, shouldReserveColorlessMana(ai, sa),
                 ManaPaymentExecution.hasUnpaidColoredShards(cost),
                 () -> coloredShardCount > 0 && genericBucketHasColorlessSource(sourcesForShards)
-                        && ManaPaymentExecution.hasReusableFreeProducerForEveryColoredShard(cost, ai, paymentCtx));
+                        && ManaPaymentConsolidation.hasReusableFreeProducerForEveryColoredShard(
+                                cost, ai, paymentCtx));
     }
 
     /** Match nested filter activation / {@link ComputerUtilMana#chooseManaAbility} generic ranking. */
@@ -531,7 +532,7 @@ final class ManaAbilitySort {
         // Same-host free 1-pip on a paid-multi land (Vista / Baldur's Gate): keep behind the paid sibling.
         key[i++] = ManaPaymentExecution.isFreeOnePipOnPaidMultiHost(ma) ? 1 : 0;
         key[i++] = producesShardMana(ma, shard) ? 0 : 1;
-        key[i++] = t.manaScore;
+        key[i++] = t.manaScore();
         key[i++] = host == null ? 0 : host.getId();
         key[i++] = ma.getId();
         return key;

@@ -102,10 +102,15 @@ final class ManaSourceTraits {
     final boolean discardsOrExilesCards;
     /** Life, self-damage, or discard/exile side effect — prefer free reusable alts when available. */
     final boolean hasCostlySideEffect;
-    /** {@link SpellAbility#calculateScoreForManaAbility()} (walks untap replacement effects; expensive). */
-    final int manaScore;
+    /**
+     * Lazy {@link SpellAbility#calculateScoreForManaAbility()} (walks untap replacement effects; expensive).
+     * {@code null} until {@link #manaScore()} is first read; {@link #NONE} stays 0.
+     */
+    private Integer manaScore;
+    private final SpellAbility scoreSource;
 
     private ManaSourceTraits() {
+        scoreSource = null;
         isManaAbility = false;
         hasTapCost = false;
         hasManaActivationCost = false;
@@ -146,6 +151,7 @@ final class ManaSourceTraits {
     }
 
     private ManaSourceTraits(final SpellAbility ma) {
+        scoreSource = ma;
         final Card host = ma.getHostCard();
         if (ma.getActivatingPlayer() == null && host != null && host.getController() != null) {
             // Amount$ evaluation, isUndoable and the untap score consult the activator; the sort/score
@@ -295,7 +301,18 @@ final class ManaSourceTraits {
         manaActivationConsolidator = hasManaActivationCost && (netPositiveConsolidator || comboFilter);
         manaReserveHost = ManaFilterConsolidation.isManaReserveHost(host);
         hasCostlySideEffect = paysLife || selfDamage || discardsOrExilesCards;
-        manaScore = isManaAbility && payCosts != null ? ma.calculateScoreForManaAbility() : 0;
+        // Defer calculateScoreForManaAbility until manaSortKey / host sort actually needs it.
+        manaScore = (isManaAbility && payCosts != null) ? null : Integer.valueOf(0);
+    }
+
+    /** Untap-replacement mana score; computed once on first use. */
+    int manaScore() {
+        Integer score = manaScore;
+        if (score == null) {
+            score = scoreSource == null ? 0 : scoreSource.calculateScoreForManaAbility();
+            manaScore = score;
+        }
+        return score;
     }
 
     /**

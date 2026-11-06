@@ -20,8 +20,6 @@ import forge.game.mana.ManaPool;
 import forge.game.player.Player;
 import forge.game.spellability.AbilityManaPart;
 import forge.game.spellability.SpellAbility;
-import forge.game.zone.ZoneType;
-
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -310,20 +308,20 @@ final class ManaPaymentBanking {
         // then other net-positive filters (a signet's surplus funds a Signet-like land's {1}).
         final List<SpellAbility> seconds = new ArrayList<>();
         final List<SpellAbility> signets = new ArrayList<>();
-        for (final Card c : ai.getCardsIn(ZoneType.Battlefield)) {
-            for (final SpellAbility ma : c.getManaAbilities()) {
-                if (ma.getHostCard() != c) {
-                    continue;
-                }
-                if (ManaPaymentExecution.hasTapCost(ma)
-                        && AiCardMemory.isRememberedCard(ai, c, MemorySet.PAYS_TAP_COST)) {
-                    continue;
-                }
-                if (ManaFilterConsolidation.isComboConsolidatingFilter(ma)) {
-                    seconds.add(ma);
-                } else if (ManaPaymentConsolidation.isNetPositiveConsolidator(ma)) {
-                    signets.add(ma);
-                }
+        for (final SpellAbility ma : ComputerUtilMana.getOrBuildUniqueManaAbilities(ai, true, ctx)) {
+            final Card host = ma.getHostCard();
+            if (host == null) {
+                continue;
+            }
+            if (ManaPaymentExecution.hasTapCost(ma)
+                    && AiCardMemory.isRememberedCard(ai, host, MemorySet.PAYS_TAP_COST)) {
+                continue;
+            }
+            final ManaSourceTraits t = ManaSourceTraits.of(ma);
+            if (t.comboFilter) {
+                seconds.add(ma);
+            } else if (t.netPositiveConsolidator) {
+                signets.add(ma);
             }
         }
         seconds.addAll(signets);
@@ -370,21 +368,21 @@ final class ManaPaymentBanking {
         final List<SpellAbility> combos = new ArrayList<>();
         final List<SpellAbility> anyFilters = new ArrayList<>();
         final List<SpellAbility> rocks = new ArrayList<>();
-        for (final Card c : ai.getCardsIn(ZoneType.Battlefield)) {
-            for (final SpellAbility ma : c.getManaAbilities()) {
-                if (ma.getHostCard() != c) {
-                    continue;
-                }
-                if (ManaPaymentExecution.hasTapCost(ma) && AiCardMemory.isRememberedCard(ai, c, MemorySet.PAYS_TAP_COST)) {
-                    continue;
-                }
-                if (ManaFilterConsolidation.isComboConsolidatingFilter(ma)) {
-                    combos.add(ma);
-                } else if (ManaFilterConsolidation.isAnyManaConsolidatingFilter(ma)) {
-                    anyFilters.add(ma);
-                } else if (isReusableChainFuel(ma, ai)) {
-                    rocks.add(ma);
-                }
+        for (final SpellAbility ma : ComputerUtilMana.getOrBuildUniqueManaAbilities(ai, true, ctx)) {
+            final Card host = ma.getHostCard();
+            if (host == null) {
+                continue;
+            }
+            if (ManaPaymentExecution.hasTapCost(ma) && AiCardMemory.isRememberedCard(ai, host, MemorySet.PAYS_TAP_COST)) {
+                continue;
+            }
+            final ManaSourceTraits t = ManaSourceTraits.of(ma);
+            if (t.comboFilter) {
+                combos.add(ma);
+            } else if (t.anyManaFilter) {
+                anyFilters.add(ma);
+            } else if (isReusableChainFuel(ma, ai)) {
+                rocks.add(ma);
             }
         }
         if (combos.isEmpty() || anyFilters.isEmpty() || rocks.isEmpty()) {

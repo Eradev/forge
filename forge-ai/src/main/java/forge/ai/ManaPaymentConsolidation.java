@@ -135,22 +135,23 @@ final class ManaPaymentConsolidation {
      */
     static boolean freeGenericSourcesCover(final int need, final Predicate<Card> excluded, final Player ai,
             final ManaPaymentContext ctx, final boolean reusableOnly) {
-        final ListMultimap<Integer, SpellAbility> map = ComputerUtilMana.getOrBuildManaAbilityMap(ai, true, ctx);
-        final Set<Card> counted = new HashSet<>();
+        if (need <= 0) {
+            return true;
+        }
         int available = 0;
-        for (final SpellAbility ma : map.get(ManaAtom.GENERIC)) {
-            final Card host = ma.getHostCard();
-            if (host == null || excluded.test(host) || counted.contains(host)) {
+        for (final ManaPaymentContext.FreeSourceInventory.Host info :
+                ManaPaymentExecution.getOrBuildFreeSourceInventory(ai, ctx).hosts) {
+            if (!info.freeNoPaidActivation) {
                 continue;
             }
-            // Skip paid filters first so Study Hall's {1}:any does not mark the host before {T}:{C}.
-            if (ManaFilterConsolidation.hasManaActivationCost(ma)) {
+            final Card host = info.host;
+            if (host == null || excluded.test(host)) {
                 continue;
             }
-            if (reusableOnly && ManaFilterConsolidation.isDisposableManaAbility(ma)) {
+            if (reusableOnly && info.disposable) {
                 continue;
             }
-            if (ManaPaymentExecution.hasTapCost(ma) && (host.isTapped()
+            if (info.hasTapCost && (host.isTapped()
                     || AiCardMemory.isRememberedCard(ai, host, MemorySet.PAYS_TAP_COST))) {
                 continue;
             }
@@ -158,8 +159,7 @@ final class ManaPaymentConsolidation {
                     || AiCardMemory.isRememberedCard(ai, host, MemorySet.HELD_MANA_SOURCES_FOR_NEXT_SPELL)) {
                 continue;
             }
-            counted.add(host);
-            available += Math.max(1, ManaFilterConsolidation.getManaProducedAmount(ma));
+            available += Math.max(1, info.producedAmount);
             if (available >= need) {
                 return true;
             }

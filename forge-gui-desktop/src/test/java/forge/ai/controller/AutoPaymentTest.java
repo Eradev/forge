@@ -2770,6 +2770,53 @@ public class AutoPaymentTest extends SimulationTest {
     }
 
     /**
+     * MANA_EVAL_STATS budget: a fixed multicolor board + hand must not explode nested dry-runs on
+     * payment-prompt Auto. Ceiling is fixture-local headroom after castability/stranding collapse;
+     * raise only with an explained planner regression.
+     */
+    @Test
+    public void manaEvalStatsBudgetOnMulticolorBoard() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Plains", p);
+        addCard("Plains", p);
+        addCard("Island", p);
+        addCard("Island", p);
+        addCard("Swamp", p);
+        addCard("Mountain", p);
+        addCard("Forest", p);
+        addCard("Forest", p);
+        addCard("Sol Ring", p);
+        addCard("Selesnya Signet", p);
+        addCard("Study Hall", p);
+        addCardToZone("Lightning Helix", p, ZoneType.Hand);
+        addCardToZone("Growth Spiral", p, ZoneType.Hand);
+        addCardToZone("Shock", p, ZoneType.Hand);
+        Card spell = addCardToZone("Divine Favor", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("1 W");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        final int[] probes = new int[1];
+        p.runWithController(() -> {
+            ManaPaymentEvalStats.reset();
+            ComputerUtilMana.getManaSourcesToPayCostForPaymentPrompt(mc, sa, p, false);
+            probes[0] = ManaPaymentEvalStats.getTotalNestedPaymentProbes();
+        }, new PlayerControllerAi(game, p, p.getOriginalLobbyPlayer()));
+
+        AssertJUnit.assertTrue(
+                "Nested payment probes exceeded budget on multicolor board: " + probes[0]
+                        + " (see ManaPaymentEvalStats)",
+                probes[0] <= 48);
+        assertProductionPayment(game, p, mc, sa);
+    }
+
+    /**
      * TimSort only checks the comparator contract once a shard bucket has 32+ abilities.
      * Mixed colorless, colored, filters, and multi-mana sources used to throw
      * IllegalArgumentException from sortManaAbilities.

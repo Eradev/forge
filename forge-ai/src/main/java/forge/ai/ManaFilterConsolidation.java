@@ -337,7 +337,7 @@ final class ManaFilterConsolidation {
             }
             if (ability.isManaAbility()) {
                 final ManaSourceTraits t = ManaSourceTraits.of(ability);
-                score += t.manaScore;
+                score += t.manaScore();
                 maxManaProduced = Math.max(maxManaProduced, t.producedAmount);
                 hasManaCostAbility |= t.hasManaActivationCost;
                 disposable |= t.disposable;

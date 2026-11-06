@@ -28,6 +28,11 @@ public final class CastabilityProbe {
     static final int CANDIDATE_CAP = 5;
     /** Soft CMC cap: skip castability dry-runs above this CMC when total mana budget is insufficient. */
     private static final int SOFT_CMC_CAP = 3;
+    /**
+     * Hard cap on nested {@code payManaCost} dry-runs for one outer payment. After the budget is spent,
+     * remaining castability candidates are skipped and shard choice falls back to efficiency / stranding.
+     */
+    static final int DRY_RUN_BUDGET_PER_PAYMENT = 32;
 
     /** System property {@code forge.manaPayment.castabilityProbe} overrides preference when set. */
     private static final String SYS_PROP = "forge.manaPayment.castabilityProbe";
@@ -115,13 +120,21 @@ public final class CastabilityProbe {
         toProbe = capCandidates(toProbe);
         // Efficiency prefilter: castability dry-runs only among the cheapest tier. Disabled when
         // skipOptimizations so before/after MANA_EVAL_STATS stay comparable.
+        boolean efficiencyPrefiltered = false;
         if (toProbe.size() > 1
                 && (!ManaPaymentContext.skipOptimizations() || ManaPaymentContext.fastHeuristics())) {
             altScan = ManaPaymentExecution.AlternativeScan.of(candidates, toPay,
                     ManaPaymentExecution.remainingPipsForShard(cost, toPay));
             toProbe = mostEfficient(toProbe, cost, sa, ai, toPay, candidates, altScan, consumedBuilder, probeCtx);
+            efficiencyPrefiltered = true;
         }
+        // Board scratch shared across candidates: tap/sac reservations are loop-invariant; only each
+        // candidate's consumed hosts change unavailable shards / available mana.
+        prepareBoardScratch(ai, probeCtx);
         for (final SpellAbility cand : toProbe) {
+            if (dryRunBudgetExhausted(probeCtx)) {
+                break;
+            }
             final int castable;
             try (ManaPaymentExecution.ReservationSnapshot snap = ManaPaymentExecution.ReservationSnapshot.take(ai)) {
                 final Set<Card> consumed = consumedBuilder.build(cand, sa, ai, probeCtx);
@@ -145,23 +158,31 @@ public final class CastabilityProbe {
                     takeCand = true;
                     bestEfficiency = Integer.MAX_VALUE;
                 } else if (!preferCand && !preferBest) {
-                    if (altScan == null) {
-                        altScan = ManaPaymentExecution.AlternativeScan.of(candidates, toPay,
-                                ManaPaymentExecution.remainingPipsForShard(cost, toPay));
-                    }
-                    final int candEfficiency = ManaPaymentExecution.evaluatePaymentImpact(cost,
-                            sa, ai, toPay, cand, candidates, altScan, test, probeCtx).efficiencyScore();
-                    if (best == null) {
-                        takeCand = true;
-                        bestEfficiency = candEfficiency;
-                    } else {
-                        if (bestEfficiency == Integer.MAX_VALUE) {
-                            bestEfficiency = ManaPaymentExecution.evaluatePaymentImpact(cost, sa, ai, toPay, best,
-                                    candidates, altScan, test, probeCtx).efficiencyScore();
+                    if (efficiencyPrefiltered) {
+                        // mostEfficient already equalized scores; reuse that tier (no second impact eval).
+                        if (best == null || tieBreakPrefers(cand, best, 0, 0, toPay, cost, ai, sa)) {
+                            takeCand = true;
+                            bestEfficiency = 0;
                         }
-                        if (tieBreakPrefers(cand, best, candEfficiency, bestEfficiency, toPay, cost, ai, sa)) {
+                    } else {
+                        if (altScan == null) {
+                            altScan = ManaPaymentExecution.AlternativeScan.of(candidates, toPay,
+                                    ManaPaymentExecution.remainingPipsForShard(cost, toPay));
+                        }
+                        final int candEfficiency = ManaPaymentExecution.evaluatePaymentImpact(cost,
+                                sa, ai, toPay, cand, candidates, altScan, test, probeCtx).efficiencyScore();
+                        if (best == null) {
                             takeCand = true;
                             bestEfficiency = candEfficiency;
+                        } else {
+                            if (bestEfficiency == Integer.MAX_VALUE) {
+                                bestEfficiency = ManaPaymentExecution.evaluatePaymentImpact(cost, sa, ai, toPay, best,
+                                        candidates, altScan, test, probeCtx).efficiencyScore();
+                            }
+                            if (tieBreakPrefers(cand, best, candEfficiency, bestEfficiency, toPay, cost, ai, sa)) {
+                                takeCand = true;
+                                bestEfficiency = candEfficiency;
+                            }
                         }
                     }
                 }
@@ -171,6 +192,7 @@ public final class CastabilityProbe {
                 best = cand;
             }
         }
+        probeCtx.caches.castabilityProbe.clearBoardScratch();
         return best;
     }
 
@@ -185,7 +207,7 @@ public final class CastabilityProbe {
         final List<SpellAbility> preferred = new ArrayList<>(candidates.size());
         for (final SpellAbility cand : candidates) {
             if (ManaFilterConsolidation.isDisposableManaAbility(cand)
-                    && !ManaPaymentExecution.disposableIsReasonableForShard(
+                    && !ManaPaymentConsolidation.disposableIsReasonableForShard(
                             cand, cost, toPay, candidates, ai, ctx)) {
                 continue;
             }
@@ -250,24 +272,49 @@ public final class CastabilityProbe {
         return dryRunCountForTests;
     }
 
-    static int countCastableSpellsAfterPayment(final Player ai, final SpellAbility spellBeingPaid,
-            final Set<Card> consumed, final ManaPaymentContext ctx) {
-        final Set<Card> reserved = new HashSet<>(consumed);
+    static boolean dryRunBudgetExhausted(final ManaPaymentContext ctx) {
+        return ctx != null && ctx.caches.castabilityDryRunsUsed >= DRY_RUN_BUDGET_PER_PAYMENT;
+    }
+
+    /**
+     * Prefill board scratch from tap/sac reservations shared by every candidate in this {@link #pickBest}.
+     */
+    private static void prepareBoardScratch(final Player ai, final ManaPaymentContext ctx) {
+        final ManaPaymentContext.CastabilityProbeScratch probe = ctx.caches.castabilityProbe;
+        final Set<Card> baseReserved = new HashSet<>();
         final Set<Card> tapCost = AiCardMemory.getMemorySet(ai, MemorySet.PAYS_TAP_COST);
         if (tapCost != null) {
-            reserved.addAll(tapCost);
+            baseReserved.addAll(tapCost);
         }
         final Set<Card> sacCost = AiCardMemory.getMemorySet(ai, MemorySet.PAYS_SAC_COST);
         if (sacCost != null) {
-            reserved.addAll(sacCost);
+            baseReserved.addAll(sacCost);
         }
+        probe.baseUnavailableColoredShards.clear();
+        probe.baseUnavailableColoredShards.addAll(computeUnavailableColoredShards(ai, baseReserved, ctx));
+        probe.baseAvailableManaAfterReservation = computeAvailableManaAfterReservation(ai, baseReserved, ctx);
+        probe.baseReservedHosts.clear();
+        probe.baseReservedHosts.addAll(baseReserved);
+        probe.clearLastFailure();
+    }
+
+    static int countCastableSpellsAfterPayment(final Player ai, final SpellAbility spellBeingPaid,
+            final Set<Card> consumed, final ManaPaymentContext ctx) {
         final ManaPaymentContext.CastabilityProbeScratch probe = ctx.caches.castabilityProbe;
-        probe.resetForProbe();
-        probe.unavailableColoredShards.addAll(computeUnavailableColoredShards(ai, reserved, ctx));
-        probe.availableManaAfterReservation = computeAvailableManaAfterReservation(ai, reserved, ctx);
+        final Set<Card> reserved = new HashSet<>(probe.baseReservedHosts);
+        reserved.addAll(consumed);
+        // Start from the shared board scratch; only recompute for hosts this candidate newly consumes.
+        probe.unavailableColoredShards.clear();
+        probe.unavailableColoredShards.addAll(probe.baseUnavailableColoredShards);
+        if (!consumed.isEmpty()) {
+            probe.unavailableColoredShards.addAll(computeUnavailableColoredShards(ai, reserved, ctx));
+        }
+        probe.availableManaAfterReservation = consumed.isEmpty()
+                ? probe.baseAvailableManaAfterReservation
+                : computeAvailableManaAfterReservation(ai, reserved, ctx);
         int count = countCastableSpellsInZone(ai, spellBeingPaid, reserved, ZoneType.Hand, ctx);
         count += countCastableSpellsInZone(ai, spellBeingPaid, reserved, ZoneType.Command, ctx);
-        probe.resetForProbe();
+        probe.clearLastFailure();
         return count;
     }
 
@@ -435,13 +482,19 @@ public final class CastabilityProbe {
     private static boolean canPayManaCostExcluding(final SpellAbility candSa, final Player ai, final Set<Card> consumed,
             final ManaPaymentContext ctx) {
         final ManaPaymentContext.CastabilityProbeScratch probe = ctx.caches.castabilityProbe;
+        if (dryRunBudgetExhausted(ctx)) {
+            return false;
+        }
         probe.clearLastFailure();
         try (ManaPaymentExecution.ReservationSnapshot snap =
                 ManaPaymentExecution.ReservationSnapshot.take(ai).holdingForNextSpell(consumed)) {
             dryRunCountForTests++;
+            ctx.caches.castabilityDryRunsUsed++;
             final boolean result = ComputerUtilMana.payManaCostForCastabilityProbe(candSa.getPayCosts(), candSa, ai,
                     ctx);
             if (!result && probe.lastFailureWasNoSources && probe.lastFailedColoredShard != null) {
+                // Grow unavailable colors across dry-runs for this candidate (and later ones when the
+                // failure does not depend on consumed hosts — base scratch already covers that case).
                 probe.unavailableColoredShards.add(probe.lastFailedColoredShard);
             }
             return result;
