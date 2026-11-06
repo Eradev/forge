@@ -341,7 +341,21 @@ public abstract class SpellAbility extends CardTraitBase implements ISpellAbilit
         if (mp != null && metConditions()) {
             int amount = hasParam("Amount") ? AbilityUtils.calculateAmount(getHostCard(), getParam("Amount"), this) : 1;
 
-            if (!multiply || mp.isAnyMana() || mp.isComboMana() || mp.isSpecialMana()) {
+            if (mp.isSpecialMana()) {
+                // Prediction (multiply): express choice enumerates EachColorAmong / modal pips.
+                // Resolve uses Amount$ as a multiplier of the full express-choice string in
+                // GameActionUtil.generatedMana, so leave non-multiply as Amount$.
+                if (multiply) {
+                    final String mana = mp.mana(this);
+                    if (mana != null && !mana.isEmpty()) {
+                        result += mana.trim().split("\\s+").length;
+                    } else {
+                        result += amount;
+                    }
+                } else {
+                    result += amount;
+                }
+            } else if (!multiply || mp.isAnyMana() || mp.isComboMana()) {
                 result += amount;
             } else {
                 // For cards that produce like {C}{R} vs cards that produce {R}{R}.

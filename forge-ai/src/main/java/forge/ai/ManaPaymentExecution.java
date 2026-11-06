@@ -172,6 +172,42 @@ final class ManaPaymentExecution {
     }
 
     /**
+     * True for a host's free 1-pip ability when a sibling paid multi/consolidator shares an exclusive
+     * cost (typically {@code {T}}) and yields more mana than its activation CMC. Covers Tarnation Vista
+     * (Chosen + EachColorAmong), Baldur's Gate / Leyline / Orchard-style free {@code {C}} + paid multi,
+     * without card-name AILogic. Study Hall's Amount$1 any-filter stays on
+     * {@link #isFreeColorlessOnAnyManaFilterHost}.
+     */
+    static boolean isFreeOnePipOnPaidMultiHost(final SpellAbility ma) {
+        final ManaSourceTraits t = ManaSourceTraits.of(ma);
+        if (t.hasManaActivationCost || t.producedAmount != 1 || t.disposable) {
+            return false;
+        }
+        final Card host = ma.getHostCard();
+        if (host == null) {
+            return false;
+        }
+        for (final SpellAbility other : host.getManaAbilities()) {
+            if (other == ma) {
+                continue;
+            }
+            final ManaSourceTraits ot = ManaSourceTraits.of(other);
+            if (!ot.hasManaActivationCost || ot.producedAmount <= ot.activationCMC) {
+                continue;
+            }
+            // Activating the free pip must lock out the paid multi (shared tap / exclusive key).
+            if (t.leavesSiblingUsable(ot)) {
+                continue;
+            }
+            if (ot.netPositiveConsolidator || ot.multiPipFilter || ot.comboFilter
+                    || (ot.anyManaFilter && ot.producedAmount > ot.activationCMC)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * True when a free (no mana activation cost), reusable ability can pay this colored shard without a
      * nested activation: dedicated lands (Forest), combo duals (Rootbound Crag), and free any-mana rocks
      * (Mox Krismite, Meteorite). Paid filters and one-shots stay out. Basics still beat free any-mana via
@@ -2279,10 +2315,54 @@ final class ManaPaymentExecution {
                     continue;
                 }
             }
+            // Same-host free 1-pip (Vista Chosen / Baldur's Gate {C}): defer when unpaid cost warrants the
+            // paid multi sibling and that sibling remains a usable net-positive consolidator.
+            if (isFreeOnePipOnPaidMultiHost(paymentChoice) && countUnpaidPips(cost) >= 2
+                    && hostPaidMultiStillWorthActivating(paymentChoice, cost, sa, ai, ctx, test)) {
+                continue;
+            }
 
             valid.add(paymentChoice);
         }
         return valid;
+    }
+
+    /**
+     * True when {@code freePip}'s host still has a paid multi sibling that is net-positive for the
+     * remaining unpaid pips and can be activated (fuel available without stranding the outer cost).
+     */
+    private static boolean hostPaidMultiStillWorthActivating(final SpellAbility freePip,
+            final ManaCostBeingPaid cost, final SpellAbility sa, final Player ai,
+            final ManaPaymentContext ctx, final boolean test) {
+        final Card host = freePip.getHostCard();
+        if (host == null) {
+            return false;
+        }
+        final ManaSourceTraits freeTraits = ManaSourceTraits.of(freePip);
+        for (final SpellAbility other : host.getManaAbilities()) {
+            if (other == freePip) {
+                continue;
+            }
+            final ManaSourceTraits ot = ManaSourceTraits.of(other);
+            if (!ot.hasManaActivationCost || ot.producedAmount <= ot.activationCMC
+                    || freeTraits.leavesSiblingUsable(ot)) {
+                continue;
+            }
+            if (!(ot.netPositiveConsolidator || ot.multiPipFilter || ot.comboFilter)) {
+                continue;
+            }
+            // Paid multi must still cover more of the unpaid cost than burning the free 1-pip.
+            if (ot.producedAmount < 2 || countUnpaidPips(cost) < 2) {
+                continue;
+            }
+            if (ManaPaymentConsolidation.shouldReserveConsolidator(other, sa, cost, ai, ctx)) {
+                continue;
+            }
+            if (canActivateFilter(ai, other, ComputerUtilMana.getOrBuildManaAbilityMap(ai, true, ctx), false)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

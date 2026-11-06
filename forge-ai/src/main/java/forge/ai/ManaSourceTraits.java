@@ -237,8 +237,6 @@ final class ManaSourceTraits {
         disposable = disp;
         selfSacCreature = disposable && !sacrificesOther && host != null && host.isCreature();
 
-        producedAmount = ma.amountOfManaGenerated(true);
-
         anyMana = mp != null && mp.isAnyMana();
         comboMana = mp != null && mp.isComboMana();
         if (mp == null || !comboMana) {
@@ -251,15 +249,26 @@ final class ManaSourceTraits {
         final boolean multiManaCombo = comboAmount >= 2;
 
         manaString = mp != null && !anyMana && !comboMana ? mp.mana(ma) : null;
-        final int manaTokens = manaString == null ? 0 : manaString.split(" ").length;
+        final int manaTokens = manaString == null || manaString.isEmpty() ? 0 : manaString.trim().split("\\s+").length;
+
+        // Special EachColorAmong (etc.): prefer express-choice size over Amount$ default 1.
+        // amountOfManaGenerated(true) already does this; re-check tokens so traits stay honest if
+        // mana() populated the choice after a zero/empty prediction.
+        int produced = ma.amountOfManaGenerated(true);
+        if (mp != null && mp.isSpecialMana() && manaTokens > produced) {
+            produced = manaTokens;
+        }
+        producedAmount = produced;
 
         multiShardFilter = hasManaActivationCost && manaString != null && manaTokens >= 2;
-        variableAmountFilter = hasManaActivationCost && manaString != null && manaTokens < 2 && producedAmount >= 2;
+        // Paid Any×N (Baldur's Gate Amount$ X) or single-token Amount$≥2: variable multi yield.
+        variableAmountFilter = hasManaActivationCost && producedAmount >= 2
+                && ((manaString != null && manaTokens < 2) || (anyMana && !multiShardFilter && !multiManaCombo));
         multiPipFilter = multiShardFilter || variableAmountFilter;
         // One-shot consolidators (Calciform Pools' storage counters) are never chained or consolidated
         // proactively; they stay ordinary fallback sources, sorted behind reusable producers.
         comboFilter = multiManaCombo && hasManaActivationCost && !disposable;
-        anyManaFilter = hasManaActivationCost && mp != null && anyMana && !multiShardFilter && !comboFilter;
+        anyManaFilter = hasManaActivationCost && mp != null && anyMana && !multiPipFilter && !comboFilter;
 
         requiresTappingOtherCreature = isManaAbility && !disposable && tapsCreature;
         doesNotUntapNormally = isManaAbility && !disposable && hasTapCost && host != null
