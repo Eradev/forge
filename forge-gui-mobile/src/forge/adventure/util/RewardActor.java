@@ -9,6 +9,7 @@ import com.badlogic.gdx.graphics.Texture.TextureFilter;
 import com.badlogic.gdx.graphics.g2d.*;
 import com.badlogic.gdx.graphics.glutils.FrameBuffer;
 import com.badlogic.gdx.graphics.glutils.ShaderProgram;
+import com.badlogic.gdx.math.Interpolation;
 import com.badlogic.gdx.math.MathUtils;
 import com.badlogic.gdx.math.Matrix4;
 import com.badlogic.gdx.math.Vector3;
@@ -17,7 +18,9 @@ import com.badlogic.gdx.scenes.scene2d.Group;
 import com.badlogic.gdx.scenes.scene2d.InputEvent;
 import com.badlogic.gdx.scenes.scene2d.InputListener;
 import com.badlogic.gdx.scenes.scene2d.actions.Actions;
+import com.badlogic.gdx.scenes.scene2d.actions.TemporalAction;
 import com.badlogic.gdx.scenes.scene2d.ui.Image;
+import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane;
 import com.badlogic.gdx.scenes.scene2d.ui.Tooltip;
 import com.badlogic.gdx.scenes.scene2d.ui.TooltipManager;
 import com.badlogic.gdx.scenes.scene2d.utils.ActorGestureListener;
@@ -1381,12 +1384,13 @@ public class RewardActor extends Actor implements Disposable, ImageFetcher.Callb
 
     class ComplexTooltip extends Group {
         private TextraLabel cLabel;
+        private ScrollPane cDescPane;
         private Image cImage, altcImage, cBackDrop;
         private float inset, width, x, y;
         private int ARP;
 
         public ComplexTooltip(Image i) {
-            this(i, Align.left);
+            this(i, Align.topLeft);
         }
 
         public ComplexTooltip(Image i, int align) {
@@ -1398,26 +1402,50 @@ public class RewardActor extends Actor implements Disposable, ImageFetcher.Callb
             x = cImage.getX() + inset;
             y = cImage.getPrefHeight() / 2.3f;
             ARP = Forge.isLandscapeMode() ? 100 : 150;
+            String rawDescription = description == null ? "" : description.stripTrailing();
             String text = reward.type.equals(Reward.Type.CardPack)
-                ? "[%" + ARP + "][%?SHADOW]" + description
-                : "[%" + ARP + "]" + description;
+                ? "[%" + ARP + "][%?SHADOW]" + rawDescription
+                : "[%" + ARP + "]" + rawDescription;
             cLabel = Controls.newTextraLabel(text);
-            cLabel.setAlignment(align);
+            // Top-align so wrapped content scrolls predictably inside the pane.
+            cLabel.setAlignment(Align.isLeft(align) || Align.isRight(align) ? (align | Align.top) : Align.topLeft);
             cLabel.setWrap(true);
             cLabel.setWidth(width);
-            cLabel.setY(reward.type.equals(Reward.Type.CardPack) ? y - 30 : y);
-            cLabel.setX(x);
+            cLabel.setPosition(0, 0);
+
+            float bottomPad = getHeight() * 0.05f;
+            float descTop = reward.type.equals(Reward.Type.CardPack) ? getHeight() / 3.5f : y;
+            float descH = Math.max(1f, descTop - bottomPad);
+            cDescPane = new ScrollPane(cLabel);
+            cDescPane.setBounds(x, bottomPad, width, descH);
+            cDescPane.setScrollingDisabled(true, false);
+            cDescPane.setFadeScrollBars(false);
+            cDescPane.addCaptureListener(new InputListener() {
+                @Override
+                public boolean touchDown(InputEvent event, float px, float py, int pointer, int button) {
+                    stopScrollAvailableHint();
+                    return false;
+                }
+
+                @Override
+                public boolean scrolled(InputEvent event, float px, float py, float amountX, float amountY) {
+                    stopScrollAvailableHint();
+                    return false;
+                }
+            });
+
             if (reward.type.equals(Reward.Type.CardPack)) {
                 //FIXME: this is needed until the cLabel.style = labelstyle override works for the description text backdrop
                 cBackDrop = new Image(Forge.getAssets().getGrayTexture());
                 cBackDrop.setBounds(cImage.getX(), 0, getWidth(), getHeight() / 3.5f);
                 addActorAt(0, cImage);
                 addActorAt(1, cBackDrop);
-                addActorAt(2, cLabel);
+                addActorAt(2, cDescPane);
             } else {
                 addActorAt(0, cImage);
-                addActorAt(1, cLabel);
+                addActorAt(1, cDescPane);
             }
+            refreshDescriptionLayout();
         }
 
         public Image getStoredImage() {
@@ -1426,6 +1454,75 @@ public class RewardActor extends Actor implements Disposable, ImageFetcher.Callb
 
         public TextraLabel getStoredLabel() {
             return cLabel;
+        }
+
+        void onShown() {
+            refreshDescriptionLayout();
+        }
+
+        private void refreshDescriptionLayout() {
+            if (cDescPane == null || cLabel == null) {
+                return;
+            }
+            float paneWidth = cDescPane.getWidth();
+            String text = cLabel.storedText == null ? "" : cLabel.storedText.stripTrailing();
+            cLabel.setWidth(paneWidth);
+            cLabel.layout.setTargetWidth(paneWidth);
+            cLabel.getFont().markup(text, cLabel.layout.clear());
+            cLabel.layout();
+            float prefHeight = cLabel.getPrefHeight();
+            float paneHeight = cDescPane.getHeight();
+            cLabel.setHeight(prefHeight > paneHeight ? prefHeight + 4f : prefHeight);
+            stopScrollAvailableHint();
+            cDescPane.cancel();
+            cDescPane.setScrollY(0);
+            cDescPane.updateVisualScroll();
+            cDescPane.invalidate();
+            cDescPane.layout();
+            playScrollAvailableHint();
+        }
+
+        private void stopScrollAvailableHint() {
+            if (cDescPane != null) {
+                cDescPane.clearActions();
+            }
+        }
+
+        private void playScrollAvailableHint() {
+            float maxY = cDescPane.getMaxY();
+            if (maxY <= 2f) {
+                return;
+            }
+            float bounce = Math.min(6f, maxY);
+            cDescPane.addAction(Actions.sequence(
+                    Actions.delay(0.04f),
+                    new TemporalAction(0.28f, Interpolation.sineOut) {
+                        @Override
+                        protected void update(float percent) {
+                            if (cDescPane.isPanning() || cDescPane.isDragging()) {
+                                stopScrollAvailableHint();
+                                return;
+                            }
+                            cDescPane.setScrollY(bounce * percent);
+                            cDescPane.updateVisualScroll();
+                        }
+                    },
+                    new TemporalAction(0.36f, Interpolation.sineIn) {
+                        @Override
+                        protected void update(float percent) {
+                            if (cDescPane.isPanning() || cDescPane.isDragging()) {
+                                stopScrollAvailableHint();
+                                return;
+                            }
+                            cDescPane.setScrollY(bounce * (1f - percent));
+                            cDescPane.updateVisualScroll();
+                        }
+                    },
+                    Actions.run(() -> {
+                        cDescPane.setScrollY(0);
+                        cDescPane.updateVisualScroll();
+                    })
+            ));
         }
 
         @Override
@@ -1449,6 +1546,10 @@ public class RewardActor extends Actor implements Disposable, ImageFetcher.Callb
             if (!frontSideUp())
                 return;
             super.enter(event, x, y, pointer, fromActor);
+            ComplexTooltip tip = getActor();
+            if (tip != null) {
+                tip.onShown();
+            }
         }
     }
 
