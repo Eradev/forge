@@ -1745,8 +1745,43 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals(0, countTapped(game, "Llanowar Elves"));
     }
 
+    // Pure generic {1}: mono free (Forest / Mox Pearl, rank 25) must beat free combo Command Tower
+    // (rank 30 under PREFER_COLORLESS). Tower needs a commander for color-identity mana.
+    @Test
+    public void preferMonoFreeOverCommandTowerForPureGeneric() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card commander = addCardToZone("Grizzly Bears", p, ZoneType.Command);
+        p.addCommander(commander);
+
+        addCard("Command Tower", p);
+        addCard("Forest", p);
+        addCard("Mox Pearl", p);
+        Card spell = addCardToZone("Bonesplitter", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("1");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertFalse("Command Tower should stay untapped for pure {1}; actual: " + sources,
+                sources.anyMatch(c -> "Command Tower".equals(c.getName())));
+        AssertJUnit.assertTrue("Forest or Mox Pearl should pay {1}; actual: " + sources,
+                sources.anyMatch(c -> "Forest".equals(c.getName()) || "Mox Pearl".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1"), sa));
+        AssertJUnit.assertEquals(0, countTapped(game, "Command Tower"));
+        AssertJUnit.assertTrue("Forest or Mox Pearl should be tapped",
+                countTapped(game, "Forest") + countTapped(game, "Mox Pearl") == 1);
+    }
+
     // Cheap manland animate ({1}): Meteorite/Petal can fund animate while Mutavault is held out.
-    // Meteorite (any-mana rank 20) beats combat-ranked Mutavault (35); unpenalized Mutavault (10) would pay.
+    // Meteorite (any/combo rank 30 under PREFER_COLORLESS) beats combat-ranked Mutavault (35);
+    // unpenalized Mutavault (10) would pay.
     @Test
     public void preferOrdinaryLandOverMutavaultWithActivatableAnimate() {
         Game game = initAndCreateGame();

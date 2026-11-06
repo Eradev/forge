@@ -222,10 +222,12 @@ final class ManaAbilitySort {
         if (t.hasManaActivationCost) {
             return t.netNegativeAnyManaFilterLoss > 0 ? 40 + t.netNegativeAnyManaFilterLoss : 40;
         }
-        if (t.anyMana) {
-            return pref.reservesColorless() ? 10 : 20;
-        }
-        if (t.comboMana && !t.producesOnlyColorless) {
+        // Free any / combo (Command Tower, Meteorite): under PREFER_COLORLESS, keep behind mono free
+        // so pure generic spends Forest/Mox first and saves flexible sources for color.
+        if (t.anyMana || (t.comboMana && !t.producesOnlyColorless)) {
+            if (pref == GenericColorPreference.PREFER_COLORLESS) {
+                return 30;
+            }
             return pref.reservesColorless() ? 10 : 20;
         }
         if (pref == GenericColorPreference.PREFER_COLORLESS && t.producesColoredWithoutFilterCost) {
