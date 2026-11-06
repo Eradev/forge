@@ -1438,26 +1438,15 @@ public class RewardActor extends Actor implements Disposable, ImageFetcher.Callb
             cLabel.setWidth(width);
             cLabel.setPosition(0, 0);
 
-            float bottomPad = getHeight() * 0.05f;
+            // Keep clear of the ornate inner frame; horizontal inset is ~13% of width.
+            float bottomPad = Math.max(inset * 0.55f, getHeight() * 0.09f);
             float descTop = reward.type.equals(Reward.Type.CardPack) ? getHeight() / 3.5f : y;
             float descH = Math.max(1f, descTop - bottomPad);
             cDescPane = new ScrollPane(cLabel);
             cDescPane.setBounds(x, bottomPad, width, descH);
             cDescPane.setScrollingDisabled(true, false);
-            cDescPane.setFadeScrollBars(false);
-            cDescPane.addCaptureListener(new InputListener() {
-                @Override
-                public boolean touchDown(InputEvent event, float px, float py, int pointer, int button) {
-                    stopScrollAvailableHint();
-                    return false;
-                }
-
-                @Override
-                public boolean scrolled(InputEvent event, float px, float py, float amountX, float amountY) {
-                    stopScrollAvailableHint();
-                    return false;
-                }
-            });
+            cDescPane.setFadeScrollBars(true);
+            cDescPane.setScrollBarPositions(false, true);
 
             if (reward.type.equals(Reward.Type.CardPack)) {
                 //FIXME: this is needed until the cLabel.style = labelstyle override works for the description text backdrop
@@ -1485,6 +1474,10 @@ public class RewardActor extends Actor implements Disposable, ImageFetcher.Callb
             refreshDescriptionLayout();
         }
 
+        void onHidden() {
+            stopAutoScroll();
+        }
+
         private void refreshDescriptionLayout() {
             if (cDescPane == null || cLabel == null) {
                 return;
@@ -1497,57 +1490,44 @@ public class RewardActor extends Actor implements Disposable, ImageFetcher.Callb
             cLabel.layout();
             float prefHeight = cLabel.getPrefHeight();
             float paneHeight = cDescPane.getHeight();
-            cLabel.setHeight(prefHeight > paneHeight ? prefHeight + 4f : prefHeight);
-            stopScrollAvailableHint();
+            cLabel.setHeight(prefHeight > paneHeight ? prefHeight + 8f : prefHeight);
+            stopAutoScroll();
             cDescPane.cancel();
             cDescPane.setScrollY(0);
             cDescPane.updateVisualScroll();
             cDescPane.invalidate();
             cDescPane.layout();
-            playScrollAvailableHint();
+            playAutoScroll();
         }
 
-        private void stopScrollAvailableHint() {
+        private void stopAutoScroll() {
             if (cDescPane != null) {
                 cDescPane.clearActions();
             }
         }
 
-        private void playScrollAvailableHint() {
+        private void playAutoScroll() {
             float maxY = cDescPane.getMaxY();
             if (maxY <= 2f) {
                 return;
             }
-            float bounce = Math.min(6f, maxY);
-            cDescPane.addAction(Actions.sequence(
-                    Actions.delay(0.04f),
-                    new TemporalAction(0.28f, Interpolation.sineOut) {
+            // Slow crawl so hover readers can follow; loop while the tooltip stays open.
+            float duration = Math.max(2.2f, maxY / 18f);
+            cDescPane.addAction(Actions.forever(Actions.sequence(
+                    Actions.delay(0.9f),
+                    new TemporalAction(duration, Interpolation.smooth) {
                         @Override
                         protected void update(float percent) {
-                            if (cDescPane.isPanning() || cDescPane.isDragging()) {
-                                stopScrollAvailableHint();
-                                return;
-                            }
-                            cDescPane.setScrollY(bounce * percent);
+                            cDescPane.setScrollY(maxY * percent);
                             cDescPane.updateVisualScroll();
                         }
                     },
-                    new TemporalAction(0.36f, Interpolation.sineIn) {
-                        @Override
-                        protected void update(float percent) {
-                            if (cDescPane.isPanning() || cDescPane.isDragging()) {
-                                stopScrollAvailableHint();
-                                return;
-                            }
-                            cDescPane.setScrollY(bounce * (1f - percent));
-                            cDescPane.updateVisualScroll();
-                        }
-                    },
+                    Actions.delay(1.1f),
                     Actions.run(() -> {
                         cDescPane.setScrollY(0);
                         cDescPane.updateVisualScroll();
                     })
-            ));
+            )));
         }
 
         @Override
@@ -1575,6 +1555,15 @@ public class RewardActor extends Actor implements Disposable, ImageFetcher.Callb
             if (tip != null) {
                 tip.onShown();
             }
+        }
+
+        @Override
+        public void exit(InputEvent event, float x, float y, int pointer, Actor toActor) {
+            ComplexTooltip tip = getActor();
+            if (tip != null) {
+                tip.onHidden();
+            }
+            super.exit(event, x, y, pointer, toActor);
         }
     }
 
