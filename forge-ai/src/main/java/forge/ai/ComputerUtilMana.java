@@ -910,7 +910,7 @@ public class ComputerUtilMana {
         }
 
         ManaAbilitySort.sortManaAbilities(sourcesForShards, manaAbilityMap, sa, cost, ai, ctx,
-                ManaPaymentExecution::canActivateFilter);
+                ManaPaymentConsolidation::canActivateFilter);
         ManaPaymentTracer.logMain(test, () -> "  sources by shard: " + sourcesForShards, ctx);
         return sourcesForShards;
     }

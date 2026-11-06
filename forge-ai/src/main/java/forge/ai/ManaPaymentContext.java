@@ -39,17 +39,66 @@ final class ManaPaymentContext {
         int availableManaAfterReservation = -1;
         ManaCostShard lastFailedColoredShard;
         boolean lastFailureWasNoSources;
-
-        void resetForProbe() {
-            unavailableColoredShards.clear();
-            availableManaAfterReservation = -1;
-            clearLastFailure();
-        }
+        /** Tap/sac hosts reserved for every candidate in the current {@link CastabilityProbe#pickBest}. */
+        final Set<Card> baseReservedHosts = new HashSet<>();
+        /** Colored shards already unavailable under {@link #baseReservedHosts} alone. */
+        final Set<ManaCostShard> baseUnavailableColoredShards = new HashSet<>();
+        /** Available mana under {@link #baseReservedHosts} alone. */
+        int baseAvailableManaAfterReservation = -1;
 
         void clearLastFailure() {
             lastFailedColoredShard = null;
             lastFailureWasNoSources = false;
         }
+
+        void clearBoardScratch() {
+            unavailableColoredShards.clear();
+            availableManaAfterReservation = -1;
+            baseReservedHosts.clear();
+            baseUnavailableColoredShards.clear();
+            baseAvailableManaAfterReservation = -1;
+            clearLastFailure();
+        }
+    }
+
+    /**
+     * Free mana-source inventory for one payment: hosts that can cover unpaid pips without paid filters.
+     * Rebuilt when reservations or board memos change.
+     */
+    static final class FreeSourceInventory {
+        static final class Host {
+            final Card host;
+            final boolean plainFree;
+            final boolean reusableFree;
+            /** Free (no mana activation cost) including disposables — for generic cover amounts. */
+            final boolean freeNoPaidActivation;
+            final boolean disposable;
+            final boolean hasTapCost;
+            final int producedAmount;
+            /** Bitmask of WUBRG+C this host can produce (bits 0..5). */
+            final int produceMask;
+            /** Mono-type surplus index (0..5) when producedAmount &gt; 1 of one type; else -1. */
+            final int monoSurplusIndex;
+            final int monoSurplusAmount;
+
+            Host(final Card host, final boolean plainFree, final boolean reusableFree,
+                    final boolean freeNoPaidActivation, final boolean disposable, final boolean hasTapCost,
+                    final int producedAmount, final int produceMask, final int monoSurplusIndex,
+                    final int monoSurplusAmount) {
+                this.host = host;
+                this.plainFree = plainFree;
+                this.reusableFree = reusableFree;
+                this.freeNoPaidActivation = freeNoPaidActivation;
+                this.disposable = disposable;
+                this.hasTapCost = hasTapCost;
+                this.producedAmount = producedAmount;
+                this.produceMask = produceMask;
+                this.monoSurplusIndex = monoSurplusIndex;
+                this.monoSurplusAmount = monoSurplusAmount;
+            }
+        }
+
+        final List<Host> hosts = new ArrayList<>();
     }
 
     /** Hand-derived facts for one spell being paid (all three computed together, so they never mix spells). */
@@ -98,6 +147,10 @@ final class ManaPaymentContext {
         final Map<SpellAbility, Integer> chosenVariableX = new IdentityHashMap<>();
         HandProbe handProbe;
         final CastabilityProbeScratch castabilityProbe = new CastabilityProbeScratch();
+        /** Nested castability {@code payManaCost} dry-runs used this outer payment (see {@link CastabilityProbe#DRY_RUN_BUDGET_PER_PAYMENT}). */
+        int castabilityDryRunsUsed;
+        /** Free-host inventory for {@link ManaPaymentExecution#freeSourceCountsCover} / Consolidation generic cover. */
+        FreeSourceInventory freeSourceInventory;
         private Boolean boardHasNetPositiveConsolidator;
         private Boolean boardHasBankingPair;
         /** Battlefield-only mana estimate, indexed by {@code checkPlayable ? 1 : 0}; pool is added live. */
@@ -178,6 +231,7 @@ final class ManaPaymentContext {
             manaAbilityMap = null;
             uniqueManaAbilities = null;
             reusableTapLandSet = null;
+            freeSourceInventory = null;
             boardHasNetPositiveConsolidator = null;
             boardHasBankingPair = null;
             battlefieldManaEstimate[0] = null;
@@ -191,6 +245,7 @@ final class ManaPaymentContext {
          */
         void bumpReservations() {
             consolidatorCoverageByFilter.clear();
+            freeSourceInventory = null;
         }
 
         /**
@@ -238,6 +293,7 @@ final class ManaPaymentContext {
             battlefieldManaEstimate[0] = null;
             battlefieldManaEstimate[1] = null;
             consolidatorCoverageByFilter.clear();
+            freeSourceInventory = null;
 
             if (manaAbilityMap == null) {
                 uniqueManaAbilities = null;
