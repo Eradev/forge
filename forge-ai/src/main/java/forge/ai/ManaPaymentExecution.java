@@ -192,10 +192,13 @@ final class ManaPaymentExecution {
                 continue;
             }
             final ManaSourceTraits ot = ManaSourceTraits.of(other);
-            if (!ot.hasManaActivationCost || ot.producedAmount <= ot.activationCMC) {
+            // Reusable paid multi only (Vista / Baldur's Gate) — not storage Combo×X.
+            if (!ot.hasManaActivationCost || ot.producedAmount <= ot.activationCMC
+                    || ot.variableX || ot.disposable) {
                 continue;
             }
-            // Activating the free pip must lock out the paid multi (shared tap / exclusive key).
+            // Shared exclusive cost only (typically {T}). Calciform free {C} vs storage {1}+counters
+            // has no shared tap — do not defer self-fuel colorless.
             if (t.leavesSiblingUsable(ot)) {
                 continue;
             }
@@ -2344,8 +2347,9 @@ final class ManaPaymentExecution {
                 continue;
             }
             final ManaSourceTraits ot = ManaSourceTraits.of(other);
+            // Shared exclusive cost (tap) + reusable paid multi — not storage / disposable.
             if (!ot.hasManaActivationCost || ot.producedAmount <= ot.activationCMC
-                    || freeTraits.leavesSiblingUsable(ot)) {
+                    || ot.variableX || ot.disposable || freeTraits.leavesSiblingUsable(ot)) {
                 continue;
             }
             if (!(ot.netPositiveConsolidator || ot.multiPipFilter || ot.comboFilter)) {
@@ -2737,6 +2741,10 @@ final class ManaPaymentExecution {
      * so Calciform Pools removes one storage counter for {@code {W}} rather than all of them. No-op for other
      * abilities. Both planning and production call this right before predicting / producing the mana, so the
      * removal count and the mana produced agree; the choice is remembered for the rest of the payment.
+     * <p>
+     * Callers that mix storage with basics must prefer the reusable free producer first so unpaid shrinks
+     * before this runs; subtracting hypothetical Island cover here would under-set X when storage is probed
+     * alone or after the land is already reserved.
      */
     static void chooseVariableManaX(final SpellAbility ma, final ManaCostBeingPaid cost, final Player ai) {
         if (!ManaSourceTraits.of(ma).variableX) {

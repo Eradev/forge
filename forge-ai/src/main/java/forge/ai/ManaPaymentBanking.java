@@ -775,7 +775,9 @@ final class ManaPaymentBanking {
         int bestConsumed = Integer.MAX_VALUE;
         ManaCostShard bestShard = null;
         for (final SpellAbility ma : sourcesForShards.values()) {
-            if (!seen.add(ma) || !ManaPaymentConsolidation.isNetPositiveConsolidator(ma)) {
+            // Skip variable-X / disposable even if multiPipFilter were true (storage Combo×X).
+            if (!seen.add(ma) || ManaSourceTraits.of(ma).variableX || ManaSourceTraits.of(ma).disposable
+                    || !ManaPaymentConsolidation.isNetPositiveConsolidator(ma)) {
                 continue;
             }
             final Set<Card> consumed = ManaPaymentConsolidation.consolidatorCoverage(ma, cost, sa, ai, ctx, test);
