@@ -75,7 +75,9 @@ final class ManaPaymentConsolidation {
 
     /** Produced mana exceeds the filter's activation cost (e.g. Signet {1} -> {G}{W}). */
     static boolean isNetPositiveConsolidator(final SpellAbility filter) {
-        return ManaSourceTraits.of(filter).netPositiveConsolidator;
+        final ManaSourceTraits t = ManaSourceTraits.of(filter);
+        // Storage / disposable multi must never run the consolidating whole-cost path.
+        return t.netPositiveConsolidator && !t.variableX && !t.disposable;
     }
 
     /**

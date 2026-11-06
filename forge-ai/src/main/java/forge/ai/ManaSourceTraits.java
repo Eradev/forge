@@ -262,7 +262,8 @@ final class ManaSourceTraits {
 
         multiShardFilter = hasManaActivationCost && manaString != null && manaTokens >= 2;
         // Paid Any×N (Baldur's Gate Amount$ X) or single-token Amount$≥2: variable multi yield.
-        variableAmountFilter = hasManaActivationCost && producedAmount >= 2
+        // Storage Combo×X (Calciform) is variableX disposable — not a reusable paid-multi consolidator.
+        variableAmountFilter = hasManaActivationCost && producedAmount >= 2 && !variableX
                 && ((manaString != null && manaTokens < 2) || (anyMana && !multiShardFilter && !multiManaCombo));
         multiPipFilter = multiShardFilter || variableAmountFilter;
         // One-shot consolidators (Calciform Pools' storage counters) are never chained or consolidated
@@ -284,8 +285,10 @@ final class ManaSourceTraits {
         multiManaProducer = !hasManaActivationCost && !disposable && !multiPipFilter
                 && (multiManaCombo ? comboAmount >= 2 : producedAmount >= 2);
         anyMultiManaProducer = multiManaProducer && anyMana;
-        multiManaDisposable = disposable && !sacrificesOther && producedAmount >= 2;
-        consolidatingCandidate = (multiPipFilter || multiManaCombo || anyMultiManaProducer) && !disposable;
+        // Black Lotus–style sac multi only — not storage SubCounter<X> (preserve counters vs basics).
+        multiManaDisposable = disposable && !sacrificesOther && !variableX && producedAmount >= 2;
+        consolidatingCandidate = (multiPipFilter || multiManaCombo || anyMultiManaProducer)
+                && !disposable && !variableX;
         netPositiveConsolidator = consolidatingCandidate && hasManaActivationCost && producedAmount > activationCMC;
         netNegativeAnyManaFilterLoss = anyManaFilter && !netPositiveConsolidator
                 ? Math.max(0, activationCMC - producedAmount) : 0;
