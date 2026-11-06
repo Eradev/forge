@@ -2344,6 +2344,77 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals(1, countTapped(game, "Badlands"));
     }
 
+    // Short board cannot pay {2}{W}{W} with reusables alone (Bastion filter burns Tower and still
+    // leaves {2} short). Lotus must pay {W}{W}{1}; one land pays the last {1}. Do not Bastion-filter
+    // for {W}{W} and waste Lotus on leftover generic.
+    @Test
+    public void blackLotusPaysTightWhenBastionCannotCoverWithoutIt() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Black Lotus", p);
+        addCard("Wooded Bastion", p);
+        addCard("Savannah", p);
+        addCard("Command Tower", p);
+        Card spell = addCardToZone("Wrath of God", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("2 W W");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Black Lotus should pay {W}{W}{1}; actual sources: " + sources,
+                sources.anyMatch(c -> "Black Lotus".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("2 W W"), sa));
+        AssertJUnit.assertEquals("Black Lotus should be sacrificed", 0,
+                game.getCardsIn(ZoneType.Battlefield).stream().filter(c -> "Black Lotus".equals(c.getName())).count());
+        // Bastion filter must not consume Tower for {W}{W}; at most one land taps for leftover {1}.
+        final int landsTapped = countTapped(game, "Wooded Bastion") + countTapped(game, "Savannah")
+                + countTapped(game, "Command Tower");
+        AssertJUnit.assertEquals("Exactly one land should pay leftover {1}; tapped lands="
+                        + countTapped(game, "Wooded Bastion") + " Bastion, "
+                        + countTapped(game, "Savannah") + " Savannah, "
+                        + countTapped(game, "Command Tower") + " Tower",
+                1, landsTapped);
+        AssertJUnit.assertFalse("Command Tower must not fuel Bastion when Lotus pays the spell",
+                countTapped(game, "Command Tower") == 1 && countTapped(game, "Wooded Bastion") == 1);
+    }
+
+    // Fourth untapped land covers {2}{W}{W} without Lotus — Lotus stays; reusables pay.
+    // Use Reliquary Tower (not Command Tower): Tower's color-identity mana is empty in these
+    // non-commander simulation games and would under-count real cover.
+    @Test
+    public void fourthLandKeepsBlackLotusWhenPayingTwoWhiteTwoGeneric() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Black Lotus", p);
+        addCard("Wooded Bastion", p);
+        addCard("Savannah", p);
+        addCard("Reliquary Tower", p);
+        addCard("Plains", p);
+        Card spell = addCardToZone("Wrath of God", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("2 W W");
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertNotNull("Payment plan should succeed with fourth land", sources);
+        AssertJUnit.assertFalse("Black Lotus should stay in play when lands cover; actual sources: " + sources,
+                sources.anyMatch(c -> "Black Lotus".equals(c.getName())));
+
+        AssertJUnit.assertTrue("Production should pay with lands alone; predicted=" + sources,
+                prodAutoPay(game, p, cost("2 W W"), sa));
+        AssertJUnit.assertEquals("Black Lotus should remain unsacrificed when lands cover", 1,
+                game.getCardsIn(ZoneType.Battlefield).stream().filter(c -> "Black Lotus".equals(c.getName())).count());
+    }
+
     // Black Lotus must still pay {R} when it is the only red source. Use CMC 1 so the CMC=3 shortfall
     // path cannot mask isSoleProducerForUnpaidColoredPip (Swamps alone cannot pay {R}).
     @Test

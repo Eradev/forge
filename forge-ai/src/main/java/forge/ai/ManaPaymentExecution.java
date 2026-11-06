@@ -617,16 +617,22 @@ final class ManaPaymentExecution {
         final int remaining = remainingPipsForShard(cost, toPay);
         final AlternativeScanFlags altFlags = (altScan != null ? altScan
                 : AlternativeScan.of(alternatives, toPay, remaining)).excluding(chosen);
+        // Black Lotus only leads when reusables cannot finish the cost and its WWW applies tightly
+        // (e.g. {2}{W}{W} with Bastion/Savannah/Tower — not when a fourth land covers alone).
+        final boolean lotusNeededTight = t.multiManaDisposable
+                && multiManaDisposableNeededAsTightCover(chosen, cost, toPay, ai, sa, ctx);
         if (t.disposable) {
-            if (altFlags.hasMultiShardAlt || altFlags.hasDirectColoredAlt
-                    || !disposableIsReasonableForShard(chosen, cost, toPay, alternatives, ai, ctx)) {
+            if (!lotusNeededTight && (altFlags.hasMultiShardAlt || altFlags.hasDirectColoredAlt
+                    || !disposableIsReasonableForShard(chosen, cost, toPay, alternatives, ai, ctx))) {
                 score += 100;
             }
         }
         // Black Lotus / multi-mana one-shots: paying N pips with one sac looks "cheap" by consumedCount
         // but must lose to reusable lands/rocks (Badlands, Mana Crypt) that cover the same cost.
         if (t.multiManaDisposable) {
-            if (altFlags.hasDirectColoredAlt || altFlags.hasSinglePipDirectColoredAlt
+            if (lotusNeededTight) {
+                score += 5;
+            } else if (altFlags.hasDirectColoredAlt || altFlags.hasSinglePipDirectColoredAlt
                     || altFlags.hasMultiManaAlt || altFlags.hasTightGenericAlt) {
                 score += 100;
             } else {
@@ -664,6 +670,13 @@ final class ManaPaymentExecution {
         if (remaining >= 2 && t.disposable && t.producedAmount < remaining && altFlags.hasMultiManaDisposableAlt) {
             score += 50;
         }
+        // When Lotus must pay most of the cost, do not let a single-pip land take the first colored
+        // pip and strand Lotus on leftover generic.
+        if (!t.multiManaDisposable && t.producedAmount < countUnpaidPips(cost)
+                && altFlags.hasMultiManaDisposableAlt
+                && multiManaDisposableAltNeededAsTightCover(alternatives, chosen, cost, toPay, ai, sa, ctx)) {
+            score += 80;
+        }
         // Overproduction vs this shard alone is fine when the activation can finish the whole cost
         // (Astral Cornucopia / combo-Any for {2}{U}); only penalize when mana is truly left over.
         if (t.anyMultiManaProducer && t.producedAmount > remaining && altFlags.hasDirectColoredAlt
@@ -686,6 +699,88 @@ final class ManaPaymentExecution {
             score += 50;
         }
         return score;
+    }
+
+    /**
+     * True when {@code lotus} is required because free reusables (and consolidators that leave only
+     * reusable leftovers) cannot finish {@code cost}, and applying its mana leaves a leftover that
+     * free reusables can cover — so Lotus should pay {@code {W}{W}{1}} rather than leftover {@code {1}}.
+     */
+    static boolean multiManaDisposableNeededAsTightCover(final SpellAbility lotus, final ManaCostBeingPaid cost,
+            final ManaCostShard toPay, final Player ai, final SpellAbility sa, final ManaPaymentContext ctx) {
+        if (lotus == null || cost == null || ai == null || !isMultiManaDisposable(lotus)) {
+            return false;
+        }
+        final int unpaid = countUnpaidPips(cost);
+        final int produced = ManaFilterConsolidation.getManaProducedAmount(lotus);
+        if (produced < 2 || unpaid <= 1) {
+            return false;
+        }
+        if (reusablesCanPaySpellCost(cost, sa, ai, ctx)) {
+            return false;
+        }
+        final ManaCostBeingPaid probe = new ManaCostBeingPaid(cost);
+        refreshExpressChoice(cost, sa, ai, toPay, lotus);
+        try {
+            ComputerUtilMana.payMultipleMana(probe,
+                    ComputerUtilMana.predictManafromSpellAbility(lotus, ai, toPay, cost), ai);
+        } finally {
+            final AbilityManaPart mp = lotus.getManaPart();
+            if (mp != null) {
+                mp.clearExpressChoice();
+            }
+        }
+        if (probe.isPaid()) {
+            return true;
+        }
+        final Set<Card> consumed = Collections.singleton(lotus.getHostCard());
+        return remainingAfterConsolidatorCoveredByReusables(probe, consumed, ai, ctx);
+    }
+
+    /** True when some multi-mana disposable other than {@code skip} is a needed tight cover for {@code cost}. */
+    static boolean multiManaDisposableAltNeededAsTightCover(final List<SpellAbility> alternatives,
+            final SpellAbility skip, final ManaCostBeingPaid cost, final ManaCostShard toPay,
+            final Player ai, final SpellAbility sa, final ManaPaymentContext ctx) {
+        if (alternatives == null) {
+            return false;
+        }
+        for (final SpellAbility ma : alternatives) {
+            if (ma == skip || !isMultiManaDisposable(ma)) {
+                continue;
+            }
+            if (multiManaDisposableNeededAsTightCover(ma, cost, toPay, ai, sa, ctx)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * True when free reusable producers alone, or a net-positive consolidator whose leftover is still
+     * reusable-covered, can finish {@code cost} without burning a disposable.
+     * <p>
+     * Uses {@link #freeReusableSourceCountsCover} (includes combo duals) rather than
+     * {@link #freeSourceCountsCover}, so Savannah + Plains + Tower + Bastion covers {@code {2}{W}{W}}
+     * and Black Lotus stays last-resort.
+     */
+    static boolean reusablesCanPaySpellCost(final ManaCostBeingPaid cost, final SpellAbility sa,
+            final Player ai, final ManaPaymentContext ctx) {
+        if (cost == null || cost.isPaid() || ai == null) {
+            return cost != null && cost.isPaid();
+        }
+        if (freeReusableSourceCountsCover(cost, Collections.emptySet(), ai, ctx)) {
+            return true;
+        }
+        final boolean test = true;
+        for (final SpellAbility ma : ComputerUtilMana.getOrBuildUniqueManaAbilities(ai, true, ctx)) {
+            if (!isNetPositiveConsolidator(ma)) {
+                continue;
+            }
+            if (consolidatorCoverage(ma, cost, sa, ai, ctx, test) != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -1012,16 +1107,15 @@ final class ManaPaymentExecution {
         if (probe.isPaid()) {
             return consumed;
         }
-        final boolean covers = ComputerUtilMana.useFullPaymentProbes(test, ctx)
-                ? keepsRemainingCostPayableWithConsumed(cost, sa, ai, probeShard, filter, consumed, test, ctx)
-                // Feasibility dry-run: only accept partial cover when leftover is generic/colorless from free taps.
-                : remainingGenericPayableByUnconsumedFreeSources(probe, consumed, ai, ctx);
-        return covers ? consumed : null;
+        // Leftover must be payable by free reusables — do not treat Black Lotus / Petal as cover
+        // (Bastion+Tower for {W}{W} leaving Lotus on leftover {1} is not coverage).
+        return remainingAfterConsolidatorCoveredByReusables(probe, consumed, ai, ctx) ? consumed : null;
     }
 
     /**
      * After a consolidator pays colored pips, true when unpaid generic/colorless can be covered by free
-     * sources whose hosts were not consumed (and no colored shards remain).
+     * reusable sources whose hosts were not consumed (and no colored shards remain). Disposables do not
+     * count — otherwise Bastion looks covered by stranding Black Lotus on leftover generic.
      */
     static boolean remainingGenericPayableByUnconsumedFreeSources(final ManaCostBeingPaid remaining,
             final Set<Card> consumed, final Player ai, final ManaPaymentContext ctx) {
@@ -1035,7 +1129,53 @@ final class ManaPaymentExecution {
         if (need <= 0) {
             return true;
         }
-        return freeGenericSourcesCover(need, host -> consumed != null && consumed.contains(host), ai, ctx);
+        return freeGenericSourcesCover(need, host -> consumed != null && consumed.contains(host), ai, ctx, true);
+    }
+
+    /**
+     * True when unpaid shards of {@code remaining} are coverable by free reusable producers outside
+     * {@code consumed} (no Black Lotus / Petal). Colored pips need a reusable free producer each;
+     * generic uses {@link #freeGenericSourcesCover} with {@code reusableOnly}.
+     */
+    static boolean remainingAfterConsolidatorCoveredByReusables(final ManaCostBeingPaid remaining,
+            final Set<Card> consumed, final Player ai, final ManaPaymentContext ctx) {
+        if (remaining == null || remaining.isPaid() || ai == null) {
+            return remaining != null && remaining.isPaid();
+        }
+        final Set<Card> used = consumed == null ? new HashSet<>() : new HashSet<>(consumed);
+        for (final ManaCostShard shard : remaining.getDistinctShards()) {
+            if (shard.isGeneric() || shard == ManaCostShard.COLORLESS || shard.isPhyrexian()) {
+                continue;
+            }
+            final int unpaid = remaining.getUnpaidShards(shard);
+            if (unpaid <= 0) {
+                continue;
+            }
+            int producers = 0;
+            for (final SpellAbility ma : ComputerUtilMana.getOrBuildUniqueManaAbilities(ai, true, ctx)) {
+                final Card host = ma.getHostCard();
+                if (host == null || used.contains(host)) {
+                    continue;
+                }
+                if (!isReusableFreeManaForShard(ma, shard)) {
+                    continue;
+                }
+                used.add(host);
+                producers++;
+                if (producers >= unpaid) {
+                    break;
+                }
+            }
+            if (producers < unpaid) {
+                return false;
+            }
+        }
+        int genericNeed = remaining.getGenericManaAmount();
+        if (remaining.getUnpaidShards(ManaCostShard.COLORLESS) > 0) {
+            genericNeed += remaining.getUnpaidShards(ManaCostShard.COLORLESS);
+        }
+        return genericNeed <= 0
+                || freeGenericSourcesCover(genericNeed, used::contains, ai, ctx, true);
     }
 
     static boolean consolidatorCoversRemainingCost(final Collection<SpellAbility> maList,
@@ -1164,7 +1304,12 @@ final class ManaPaymentExecution {
         if (ManaFilterConsolidation.isAnyManaConsolidatingFilter(filter)) {
             return anyManaFilterBeatsDisposable(filter, cost, payingShard, ai, manaAbilityMap, ctx);
         }
-        return canActivateFilter(ai, filter, manaAbilityMap, false);
+        // Combo / multi-pip filters (Wooded Bastion): same bar as Study Hall — activation must leave
+        // remaining colored + generic coverable by reusables, not by stranding Black Lotus on leftovers.
+        return canActivateFilter(ai, filter, manaAbilityMap, false)
+                && !filterActivationCompetesForSpellGeneric(filter, cost, payingShard, ai, ctx)
+                && !filterActivationStealsDedicatedColoredProducers(filter, cost, payingShard, ai, ctx)
+                && remainingColoredShardsCoveredByReusablesAfterFilterActivation(filter, cost, payingShard, ai, ctx);
     }
 
     /**
@@ -2034,6 +2179,16 @@ final class ManaPaymentExecution {
     }
 
     /**
+     * Free reusable mana producer including combo duals / any-mana lands ({@link #isPlainFreeProducer}
+     * excludes combo, which under-counts Savannah-style cover for Lotus-vs-lands decisions).
+     */
+    static boolean isFreeReusableManaProducer(final SpellAbility ma) {
+        final ManaSourceTraits t = ManaSourceTraits.of(ma);
+        return t.isManaAbility && !t.hasManaActivationCost && !t.variableAmountFilter
+                && !t.sacrificesOther && !t.disposable && !t.hostLeavesBattlefield;
+    }
+
+    /**
      * A castability winner that is a plain free producer keeps the rest of {@code cost} payable by the
      * free-source count. Returns false when a full stranding probe is still required.
      */
@@ -2077,6 +2232,25 @@ final class ManaPaymentExecution {
      */
     static boolean freeSourceCountsCover(final ManaCostBeingPaid remaining, final Set<Card> consumed,
             final Player ai, final ManaPaymentContext ctx) {
+        return freeSourceCountsCover(remaining, consumed, ai, ctx, false);
+    }
+
+    /**
+     * Like {@link #freeSourceCountsCover} but counts combo duals / any-mana free lands as cover
+     * (for Lotus-vs-reusable decisions).
+     */
+    static boolean freeReusableSourceCountsCover(final ManaCostBeingPaid remaining, final Set<Card> consumed,
+            final Player ai, final ManaPaymentContext ctx) {
+        return freeSourceCountsCover(remaining, consumed, ai, ctx, true);
+    }
+
+    /**
+     * @param includeComboFree when true, combo duals and any-mana free lands count (see
+     *                         {@link #isFreeReusableManaProducer}); when false, only
+     *                         {@link #isPlainFreeProducer} hosts count.
+     */
+    static boolean freeSourceCountsCover(final ManaCostBeingPaid remaining, final Set<Card> consumed,
+            final Player ai, final ManaPaymentContext ctx, final boolean includeComboFree) {
         // needs[0..4] = WUBRG, needs[5] = {C}
         final int[] needs = new int[6];
         int generic = 0;
@@ -2116,7 +2290,10 @@ final class ManaPaymentExecution {
                 continue;
             }
             final Card host = ma.getHostCard();
-            if (host == null || consumed.contains(host) || !isPlainFreeProducer(ma)) {
+            if (host == null || consumed.contains(host)) {
+                continue;
+            }
+            if (includeComboFree ? !isFreeReusableManaProducer(ma) : !isPlainFreeProducer(ma)) {
                 continue;
             }
             if ((tapReserved != null && tapReserved.contains(host) && hasTapCost(ma))
@@ -3603,6 +3780,12 @@ final class ManaPaymentExecution {
         if (!hasUnpaidColoredShards(cost)
                 && freeGenericSourcesCover(countUnpaidPips(cost),
                         ManaFilterConsolidation::isDisposableManaCard, ai, ctx)) {
+            return false;
+        }
+        // Colored costs: when free reusable lands/rocks already cover, do not greedily Bastion-filter
+        // (fourth land + Lotus board should keep Lotus and pay with lands).
+        if (hasUnpaidColoredShards(cost)
+                && freeReusableSourceCountsCover(cost, Collections.emptySet(), ai, ctx)) {
             return false;
         }
         final Set<SpellAbility> seen = Collections.newSetFromMap(new IdentityHashMap<>());
