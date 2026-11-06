@@ -202,8 +202,9 @@ final class ManaAbilitySort {
         }
         if (t.producesOnlyColorless && !t.hasManaActivationCost) {
             if (pref == GenericColorPreference.PREFER_COLORLESS) {
-                // Preserve Study Hall-style hosts for their paid any-mana filter; spend plain {C} lands first.
-                if (ManaPaymentExecution.isFreeColorlessOnAnyManaFilterHost(ma)) {
+                // Preserve Study Hall / Baldur's Gate-style hosts for paid filters; spend plain {C} first.
+                if (ManaPaymentExecution.isFreeColorlessOnAnyManaFilterHost(ma)
+                        || ManaPaymentExecution.isFreeOnePipOnPaidMultiHost(ma)) {
                     return host != null && host.isLand() ? 12 : 0;
                 }
                 return host != null && host.isLand() ? 10 : 0;
@@ -212,6 +213,10 @@ final class ManaAbilitySort {
                 return 30;
             }
             return host != null && host.isLand() ? 15 : 0;
+        }
+        // Vista-style free Chosen on a paid-multi host: keep behind ordinary free lands for generic.
+        if (!t.hasManaActivationCost && ManaPaymentExecution.isFreeOnePipOnPaidMultiHost(ma)) {
+            return host != null && host.isLand() ? 12 : 5;
         }
         if (t.hasManaActivationCost) {
             return t.netNegativeAnyManaFilterLoss > 0 ? 40 + t.netNegativeAnyManaFilterLoss : 40;
@@ -472,7 +477,7 @@ final class ManaAbilitySort {
         final ManaSourceTraits t = ManaSourceTraits.of(ma);
         final boolean withHandPrefs = shard.isGeneric() && ctx.colorsMostCommon != null
                 && !ctx.colorsMostCommon.isEmpty();
-        final int[] key = new int[shard.isGeneric() ? (withHandPrefs ? 21 : 16) : 12];
+        final int[] key = new int[shard.isGeneric() ? (withHandPrefs ? 22 : 17) : 13];
         int i = 0;
         if (shard.isGeneric()) {
             key[i++] = (ctx.unpaidGeneric == 1 && ManaPaymentExecution.isTightGenericProducer(ma, 1)) ? 0 : 1;
@@ -523,6 +528,8 @@ final class ManaAbilitySort {
             key[i++] = 0;
         }
         key[i++] = t.hasManaActivationCost ? 1 : 0;
+        // Same-host free 1-pip on a paid-multi land (Vista / Baldur's Gate): keep behind the paid sibling.
+        key[i++] = ManaPaymentExecution.isFreeOnePipOnPaidMultiHost(ma) ? 1 : 0;
         key[i++] = producesShardMana(ma, shard) ? 0 : 1;
         key[i++] = t.manaScore;
         key[i++] = host == null ? 0 : host.getId();

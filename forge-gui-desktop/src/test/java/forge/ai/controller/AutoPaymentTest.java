@@ -2627,6 +2627,148 @@ public class AutoPaymentTest extends SimulationTest {
                         .filter(c -> "Lion's Eye Diamond".equals(c.getName())).count());
     }
 
+    // --- Paid multi over free same-host tap (Vista / Baldur's Gate stand-ins) ---
+
+    /**
+     * Tarnation Vista: free Chosen vs paid EachColorAmong. With three mono colors and spare {@code {1}}
+     * fuel, Auto must use the paid multi rather than burning the free 1-pip and stranding the host.
+     */
+    @Test
+    public void tarnationVistaPrefersPaidMultiOverFreeChosen() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card vista = addCard("Tarnation Vista", p);
+        vista.setTapped(false);
+        vista.setChosenColors(Lists.newArrayList("white"));
+        // Mono permanents supply EachColorAmong colors; they are not mana sources.
+        addCard("Savannah Lions", p);
+        addCard("Merfolk of the Pearl Trident", p);
+        addCard("Drudge Skeletons", p);
+        addCard("Sol Ring", p); // pays Vista's {1}
+
+        Card spell = addCardToZone("Nicol Bolas, Planeswalker", p, ZoneType.Hand);
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("W U B");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Vista paid multi should pay; actual: " + sources,
+                sources.anyMatch(c -> "Tarnation Vista".equals(c.getName())));
+        AssertJUnit.assertTrue("Sol Ring should fuel Vista's {1}; actual: " + sources,
+                sources.anyMatch(c -> "Sol Ring".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("W U B"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Tarnation Vista"));
+        AssertJUnit.assertEquals(1, countTapped(game, "Sol Ring"));
+    }
+
+    /**
+     * Negative: Vista with only one mono color is not net-positive for {@code {1}}; free Chosen may pay
+     * a single pip and other sources cover the rest.
+     */
+    @Test
+    public void tarnationVistaUsesFreeChosenWhenPaidMultiNotWorthIt() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card vista = addCard("Tarnation Vista", p);
+        vista.setTapped(false);
+        vista.setChosenColors(Lists.newArrayList("white"));
+        addCard("Savannah Lions", p); // only white among mono permanents
+        addCard("Island", p);
+        addCard("Swamp", p);
+
+        Card spell = addCardToZone("Esper Charm", p, ZoneType.Hand);
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("W U B");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("W U B"), sa));
+        // Paid line needs {1} and yields only {W}; free Chosen + Island + Swamp is the sane path.
+        AssertJUnit.assertEquals(1, countTapped(game, "Tarnation Vista"));
+        AssertJUnit.assertEquals(1, countTapped(game, "Island"));
+        AssertJUnit.assertEquals(1, countTapped(game, "Swamp"));
+    }
+
+    /**
+     * Baldur's Gate stand-in for Leyline/Orchard: free {@code {C}} vs paid {@code {2}} Any×N. With three
+     * other (tapped) Gates and Sol Ring fuel, prefer the paid multi for {@code {G}{G}{G}}.
+     */
+    @Test
+    public void baldursGatePrefersPaidMultiOverFreeColorless() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card gate = addCard("Baldur's Gate", p);
+        gate.setTapped(false);
+        // Other Gates count for X but stay tapped so they cannot pay the cost themselves.
+        for (final String name : new String[] { "Azorius Guildgate", "Dimir Guildgate", "Rakdos Guildgate" }) {
+            Card other = addCard(name, p);
+            other.setTapped(true);
+        }
+        addCard("Sol Ring", p);
+
+        Card spell = addCardToZone("Acidic Slime", p, ZoneType.Hand);
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("G G G");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertTrue("Baldur's Gate paid multi should pay; actual: " + sources,
+                sources.anyMatch(c -> "Baldur's Gate".equals(c.getName())));
+        AssertJUnit.assertTrue("Sol Ring should fuel {2}; actual: " + sources,
+                sources.anyMatch(c -> "Sol Ring".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("G G G"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Baldur's Gate"));
+        AssertJUnit.assertEquals(1, countTapped(game, "Sol Ring"));
+    }
+
+    /**
+     * Negative: with only one other Gate, Baldur's Gate yields 1 for {@code {2}} — not worth the paid
+     * line; a Forest pays {@code {G}} instead.
+     */
+    @Test
+    public void baldursGateSkipsPaidMultiWhenYieldNotWorthActivation() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card gate = addCard("Baldur's Gate", p);
+        gate.setTapped(false);
+        Card other = addCard("Selesnya Guildgate", p);
+        other.setTapped(true); // X=1
+        addCard("Forest", p);
+        addCard("Sol Ring", p);
+
+        Card spell = addCardToZone("Llanowar Elves", p, ZoneType.Hand);
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("G");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertFalse("Baldur's Gate paid line is a loss for one {G}; actual: " + sources,
+                sources.anyMatch(c -> "Baldur's Gate".equals(c.getName())));
+        AssertJUnit.assertTrue("Forest should pay {G}; actual: " + sources,
+                sources.anyMatch(c -> "Forest".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("G"), sa));
+        AssertJUnit.assertEquals(0, countTapped(game, "Baldur's Gate"));
+        AssertJUnit.assertEquals(1, countTapped(game, "Forest"));
+    }
+
     /**
      * TimSort only checks the comparator contract once a shard bucket has 32+ abilities.
      * Mixed colorless, colored, filters, and multi-mana sources used to throw
