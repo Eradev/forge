@@ -1808,6 +1808,28 @@ public class ComputerUtilMana {
         return false;
     }
 
+    /**
+     * Renewable mana sources expected to remain available on the AI's next turn. Only battlefield permanents with
+     * reusable mana abilities count: Command-zone effects such as Channel are temporary, cards in hand are not yet
+     * sources, and one-shot sacrifice sources cannot be assumed to survive until the next turn.
+     */
+    public static CardCollection getManaSourcesForNextTurn(final Player ai) {
+        final CardCollection sources = new CardCollection();
+        if (ai == null) {
+            return sources;
+        }
+        for (final Card c : ai.getCardsIn(ZoneType.Battlefield)) {
+            for (final SpellAbility ability : getAIPlayableMana(c)) {
+                final Cost cost = ability.getPayCosts();
+                if (cost != null && cost.isReusuableResource()) {
+                    sources.add(c);
+                    break;
+                }
+            }
+        }
+        return sources;
+    }
+
     public static CardCollection getAvailableManaSources(final Player ai, final boolean checkPlayable) {
         return getAvailableManaSources(ai, checkPlayable, null);
     }
