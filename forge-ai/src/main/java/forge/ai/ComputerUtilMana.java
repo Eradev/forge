@@ -528,6 +528,14 @@ public class ComputerUtilMana {
         return StringUtils.repeat(color, " ", pAmount);
     }
 
+    /** Provisional ChooseColor result so {@code Produced$ Chosen} predicts during payment planning. */
+    static void applyProvisionalChosenColor(final Card sourceCard, final byte color) {
+        if (sourceCard == null || color == 0) {
+            return;
+        }
+        sourceCard.setChosenColors(Lists.newArrayList(MagicColor.toLongString(color)));
+    }
+
     /**
      * Pick a color for {@code Produced$ Any} (shard payment, trigger bonus, or dry-run probe).
      * Returns {@code 0} when no color can pay {@code toPay}.
@@ -1097,6 +1105,20 @@ public class ComputerUtilMana {
             }
             m.setExpressChoice(MagicColor.toShortString(colorChoice));
             return true;
+        }
+
+        // Produced$ Chosen before ChooseColor resolves: treat as any-color for planning (Nykthos / Orchard).
+        if (m.getOrigProduced() != null && m.getOrigProduced().contains("Chosen")) {
+            final String already = m.mana(tail);
+            if (already == null || already.isBlank() || "Chosen".equals(already.trim())) {
+                final byte colorChoice = pickColorForAnyMana(ai, sa, toPay, cost, sourceCard);
+                if (colorChoice == 0) {
+                    return false;
+                }
+                applyProvisionalChosenColor(sourceCard, colorChoice);
+                m.setExpressChoice(MagicColor.toShortString(colorChoice));
+                return true;
+            }
         }
 
         final String[] producedColors = m.mana(tail).split(" ");
@@ -2037,16 +2059,26 @@ public class ComputerUtilMana {
             final SpellAbility saPaidFor, final boolean checkManaRestrictions,
             final ActiveManaLinkVisitor visitor) {
         root.setActivatingPlayer(ai);
-        for (SpellAbility tail = root; tail != null; tail = tail.getSubAbility()) {
+        return forEachActiveManaLinkNode(root, root, ai, saPaidFor, checkManaRestrictions, visitor);
+    }
+
+    /** Walk linear subAbilities and GenericChoice/Charm {@code Choices} for mana parts. */
+    private static boolean forEachActiveManaLinkNode(final SpellAbility root, final SpellAbility node,
+            final Player ai, final SpellAbility saPaidFor, final boolean checkManaRestrictions,
+            final ActiveManaLinkVisitor visitor) {
+        for (SpellAbility tail = node; tail != null; tail = tail.getSubAbility()) {
             final AbilityManaPart mp = tail.getManaPart();
-            if (mp == null || !tail.metConditions()) {
-                continue;
+            if (mp != null && tail.metConditions()) {
+                if (!(checkManaRestrictions && saPaidFor != null && !mp.meetsManaRestrictions(saPaidFor))) {
+                    if (visitor.visit(root, tail, mp)) {
+                        return true;
+                    }
+                }
             }
-            if (checkManaRestrictions && saPaidFor != null && !mp.meetsManaRestrictions(saPaidFor)) {
-                continue;
-            }
-            if (visitor.visit(root, tail, mp)) {
-                return true;
+            for (final SpellAbility choice : tail.getAdditionalAbilityList("Choices")) {
+                if (forEachActiveManaLinkNode(root, choice, ai, saPaidFor, checkManaRestrictions, visitor)) {
+                    return true;
+                }
             }
         }
         return false;

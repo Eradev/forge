@@ -160,7 +160,14 @@ final class ManaSourceTraits {
         }
         final Cost payCosts = ma.getPayCosts();
         final List<CostPart> parts = payCosts == null ? null : payCosts.getCostParts();
-        final AbilityManaPart mp = ma.getManaPart();
+        // ChooseColor → Mana / GenericChoice: mana part may live on a subAbility or Choices mode.
+        AbilityManaPart mp = ma.getManaPart();
+        if (mp == null) {
+            final List<AbilityManaPart> allParts = ma.getAllManaParts();
+            if (!allParts.isEmpty()) {
+                mp = allParts.get(0);
+            }
+        }
 
         isManaAbility = ma.isManaAbility();
         hasTapCost = payCosts != null && payCosts.hasTapCost();
@@ -237,13 +244,21 @@ final class ManaSourceTraits {
                 // Sacrifice or spend stored counters: a one-shot resource, used only when needed.
                 disp = true;
             } else if (!ma.isUndoable()) {
-                disp = !(hasTapCost && !hasManaActivationCost);
+                // ChooseColor → Mana / GenericChoice mana: ManaEffect only marks root Mana SAs undoable;
+                // the ChooseColor host stays reusable (Nykthos, Orange Orchard).
+                if (hasManaActivationCost && ma.getManaPart() == null && mp != null) {
+                    disp = false;
+                } else {
+                    disp = !(hasTapCost && !hasManaActivationCost);
+                }
             }
         }
         disposable = disp;
         selfSacCreature = disposable && !sacrificesOther && host != null && host.isCreature();
 
-        anyMana = mp != null && mp.isAnyMana();
+        // Produced$ Chosen (Nykthos / Orchard) is color-flexible until ChooseColor resolves.
+        final boolean chosenMana = mp != null && mp.getOrigProduced() != null && mp.getOrigProduced().contains("Chosen");
+        anyMana = mp != null && (mp.isAnyMana() || chosenMana);
         comboMana = mp != null && mp.isComboMana();
         if (mp == null || !comboMana) {
             comboAmount = 0;
@@ -257,17 +272,15 @@ final class ManaSourceTraits {
         manaString = mp != null && !anyMana && !comboMana ? mp.mana(ma) : null;
         final int manaTokens = manaString == null || manaString.isEmpty() ? 0 : manaString.trim().split("\\s+").length;
 
-        // Special EachColorAmong (etc.): prefer express-choice size over Amount$ default 1.
-        // amountOfManaGenerated(true) already does this; re-check tokens so traits stay honest if
-        // mana() populated the choice after a zero/empty prediction.
-        int produced = ma.amountOfManaGenerated(true);
+        // Choices-aware prediction (Orchard modal max). Special EachColorAmong prefers express tokens.
+        int produced = ma.predictedAmountOfManaGenerated(true);
         if (mp != null && mp.isSpecialMana() && manaTokens > produced) {
             produced = manaTokens;
         }
         producedAmount = produced;
 
         multiShardFilter = hasManaActivationCost && manaString != null && manaTokens >= 2;
-        // Paid Any×N (Baldur's Gate Amount$ X) or single-token Amount$≥2: variable multi yield.
+        // Paid Any×N (Baldur's Gate), Chosen×N (Nykthos/Orchard), or single-token Amount$≥2.
         // Storage Combo×X (Calciform) is variableX disposable — not a reusable paid-multi consolidator.
         variableAmountFilter = hasManaActivationCost && producedAmount >= 2 && !variableX
                 && ((manaString != null && manaTokens < 2) || (anyMana && !multiShardFilter && !multiManaCombo));

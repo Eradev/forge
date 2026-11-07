@@ -1347,8 +1347,17 @@ final class ManaPaymentExecution {
 
     static SpellAbility refreshExpressChoice(final ManaCostBeingPaid cost, final SpellAbility sa,
             final Player ai, final ManaCostShard toPay, final SpellAbility chosen) {
-        final AbilityManaPart mp = chosen.getManaPart();
-        if (mp != null && (mp.isAnyMana() || mp.isComboMana() || chosen.getApi() == ApiType.ManaReflected)) {
+        AbilityManaPart mp = chosen.getManaPart();
+        if (mp == null) {
+            final List<AbilityManaPart> parts = chosen.getAllManaParts();
+            if (!parts.isEmpty()) {
+                mp = parts.get(0);
+            }
+        }
+        final boolean needsChoice = mp != null && (mp.isAnyMana() || mp.isComboMana()
+                || (mp.getOrigProduced() != null && mp.getOrigProduced().contains("Chosen"))
+                || chosen.getApi() == ApiType.ManaReflected);
+        if (needsChoice) {
             ComputerUtilMana.canPayShardWithSpellAbility(toPay, ai, chosen, sa, cost, true, cost.getXManaCostPaidByColor());
         }
         return chosen;
