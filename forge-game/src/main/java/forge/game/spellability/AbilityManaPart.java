@@ -751,6 +751,14 @@ public class AbilityManaPart implements java.io.Serializable {
             return true;
         }
 
+        // Produced$ Chosen before a color is locked in (ChooseColor mana abilities).
+        if (getOrigProduced() != null && getOrigProduced().contains("Chosen")) {
+            final String chosen = getChosenColor(am);
+            if (chosen == null || chosen.isEmpty()) {
+                return true;
+            }
+        }
+
         // check for produce mana replacement effects - they mess this up, so just use the mana ability
         final Card source = am.getHostCard();
         final Player activator = am.getActivatingPlayer();

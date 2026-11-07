@@ -359,8 +359,33 @@ public abstract class SpellAbility extends CardTraitBase implements ISpellAbilit
                 result += amount;
             } else {
                 // For cards that produce like {C}{R} vs cards that produce {R}{R}.
-                result += mp.mana(this).split(" ").length * amount;
+                // Produced$ Chosen with no color yet still contributes Amount$ (Nykthos / Orchard).
+                final String mana = mp.mana(this);
+                if (mana == null || mana.isBlank()) {
+                    result += amount;
+                } else {
+                    result += mana.split(" ").length * amount;
+                }
             }
+        }
+        return result;
+    }
+
+    /**
+     * Predicted mana pips for payment planning: linear subAbility amounts plus the best
+     * {@code Choices} mode (GenericChoice / Charm). AI picks the higher Orchard mode.
+     */
+    public int predictedAmountOfManaGenerated(boolean multiply) {
+        int result = 0;
+        SpellAbility tail = this;
+        while (tail != null) {
+            result += tail.amountOfManaGenerated(multiply);
+            int bestChoice = 0;
+            for (final AbilitySub choice : tail.getAdditionalAbilityList("Choices")) {
+                bestChoice = Math.max(bestChoice, choice.predictedAmountOfManaGenerated(multiply));
+            }
+            result += bestChoice;
+            tail = tail.getSubAbility();
         }
         return result;
     }
@@ -371,6 +396,11 @@ public abstract class SpellAbility extends CardTraitBase implements ISpellAbilit
         if (mp != null && mp.meetsManaRestrictions(saPaidFor)) {
             result += amountOfManaGenerated(multiply);
         }
+        int bestChoice = 0;
+        for (final AbilitySub choice : getAdditionalAbilityList("Choices")) {
+            bestChoice = Math.max(bestChoice, choice.totalAmountOfManaGenerated(saPaidFor, multiply));
+        }
+        result += bestChoice;
         result += subAbility != null ? subAbility.totalAmountOfManaGenerated(saPaidFor, multiply) : 0;
         return result;
     }
@@ -379,6 +409,9 @@ public abstract class SpellAbility extends CardTraitBase implements ISpellAbilit
         AbilityManaPart mp = getManaPart();
         if (mp != null) {
             mp.setExpressChoice(cs);
+        }
+        for (final AbilitySub choice : getAdditionalAbilityList("Choices")) {
+            choice.setManaExpressChoice(cs);
         }
         if (subAbility != null) {
             subAbility.setManaExpressChoice(cs);
@@ -390,18 +423,21 @@ public abstract class SpellAbility extends CardTraitBase implements ISpellAbilit
     }
 
     public final List<AbilityManaPart> getAllManaParts() {
-        AbilityManaPart mp = getManaPart();
-        if (mp == null && subAbility == null) {
-            return List.of();
-        }
         List<AbilityManaPart> result = Lists.newArrayList();
-        if (mp != null) {
-            result.add(mp);
+        collectAllManaParts(result);
+        return result;
+    }
+
+    void collectAllManaParts(final List<AbilityManaPart> result) {
+        if (manaPart != null) {
+            result.add(manaPart);
+        }
+        for (final AbilitySub choice : getAdditionalAbilityList("Choices")) {
+            choice.collectAllManaParts(result);
         }
         if (subAbility != null) {
-            result.addAll(subAbility.getAllManaParts());
+            subAbility.collectAllManaParts(result);
         }
-        return result;
     }
 
     @Override
@@ -436,9 +472,20 @@ public abstract class SpellAbility extends CardTraitBase implements ISpellAbilit
         // disqualifies the ability when a later sub-ability moves a card to or from a library.
         // Chromatic Sphere is the example: the mana part is on the root, the draw is a sub-ability.
         //
+        // GenericChoice / Charm modes live in AdditionalAbilityList("Choices"), not subAbility.
+        // All-mana modals (Orange Orchard) qualify; mixed Charms do not.
+        //
         // What each effect answers is fixed by the card script, not by the current board. That is
         // deliberate: CR 605.1a says to disregard replacement effects other than self-replacement
         // effects, so whether an ability is a mana ability must not change from turn to turn.
+        return manaEffectTreeAddsManaWithoutDisqualify();
+    }
+
+    /**
+     * True when this SA tree adds mana and never moves cards to/from a library.
+     * For {@code Choices}, every mode must itself be mana-capable (no mixed Charm).
+     */
+    boolean manaEffectTreeAddsManaWithoutDisqualify() {
         boolean addsMana = false;
         SpellAbility tail = this;
         while (tail != null) {
@@ -447,6 +494,15 @@ public abstract class SpellAbility extends CardTraitBase implements ISpellAbilit
             }
             if (tail.getApi() != null && tail.getApi().getSpellEffect().movesCardToOrFromLibrary(tail)) {
                 return false;
+            }
+            final List<AbilitySub> choices = tail.getAdditionalAbilityList("Choices");
+            if (!choices.isEmpty()) {
+                for (final AbilitySub choice : choices) {
+                    if (choice.usesTargeting() || !choice.manaEffectTreeAddsManaWithoutDisqualify()) {
+                        return false;
+                    }
+                }
+                addsMana = true;
             }
             tail = tail.getSubAbility();
         }

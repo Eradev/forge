@@ -857,6 +857,23 @@ public final class GameActionUtil {
             if (!value.isEmpty() && !"0".equals(value)) {
                 sb.append(value).append(" ");
             }
+            // GenericChoice / Charm: predict the best mana mode (AI picks higher Orchard yield).
+            String bestChoice = "";
+            int bestPips = 0;
+            for (final SpellAbility choice : tail.getAdditionalAbilityList("Choices")) {
+                final String choiceMana = generatedTotalMana(choice);
+                if (choiceMana.isEmpty() || "0".equals(choiceMana)) {
+                    continue;
+                }
+                final int pips = choiceMana.trim().split("\\s+").length;
+                if (pips > bestPips) {
+                    bestPips = pips;
+                    bestChoice = choiceMana;
+                }
+            }
+            if (!bestChoice.isEmpty()) {
+                sb.append(bestChoice).append(" ");
+            }
             tail = tail.getSubAbility();
         }
         return sb.toString().trim();
