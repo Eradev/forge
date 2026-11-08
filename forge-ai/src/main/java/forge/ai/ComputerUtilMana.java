@@ -569,7 +569,13 @@ public class ComputerUtilMana {
                 return c;
             }
         }
+        // Generic/{C}: prefer hand+battlefield identity over the W-first WUBRG scan (#12727 / 62ffaaed).
+        final byte prominent = CardFactoryUtil.getMostProminentColors(
+                ai.getCardsIn(ZoneType.Hand, ZoneType.Battlefield));
         for (final byte c : MagicColor.WUBRG) {
+            if (prominent != 0 && (prominent & c) == 0) {
+                continue;
+            }
             if (toPay != null && canUseAnyManaColorForShard(ai, saPaidFor, sourceCard, toPay, c)) {
                 return c;
             }
@@ -577,10 +583,6 @@ public class ComputerUtilMana {
                     || saPaidFor.allowsPayingWithShard(sourceCard, c))) {
                 return c;
             }
-        }
-        final String prominent = ComputerUtilCard.getMostProminentColor(ai.getCardsIn(ZoneType.Hand));
-        if (!StringUtils.isBlank(prominent)) {
-            return MagicColor.fromName(MagicColor.toShortString(prominent));
         }
         return MagicColor.WHITE;
     }
