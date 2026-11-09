@@ -2418,6 +2418,10 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
     public final void setText(final String t) {
         originalText = t;
         text = originalText;
+        // getAbilityText reads CardState.nonAbilityText (Text: is a copiable characteristic)
+        if (currentState != null) {
+            currentState.setNonAbilityText(t);
+        }
     }
 
     // get the text that does not belong to a cards abilities (and is not really

@@ -3735,24 +3735,23 @@ public class Player extends GameEntity implements Comparable<Player> {
         return keywordEffect;
     }
     public void updateKeywordCardAbilityText() {
-        if (getKeywordCard() == null)
+        if (keywordEffect == null) {
             return;
+        }
         final PlayerZone com = getZone(ZoneType.Command);
-        keywordEffect.setText("");
-        boolean headerAdded = false;
         StringBuilder kw = new StringBuilder();
         for (KeywordInterface k : keywords) {
-            if (!headerAdded) {
-                headerAdded = true;
+            if (kw.length() == 0) {
                 kw.append(this.getName()).append(" has: \n");
             }
             kw.append(k.getTitle()).append("\n");
         }
-        if (!kw.toString().isEmpty()) {
-            keywordEffect.setText(kw.toString());
-        }
+        keywordEffect.setText(kw.toString());
         keywordEffect.updateAbilityTextForView();
         this.updateZoneForView(com);
+        if (keywords.isEmpty()) {
+            checkKeywordCard();
+        }
     }
 
     public void checkKeywordCard() {
