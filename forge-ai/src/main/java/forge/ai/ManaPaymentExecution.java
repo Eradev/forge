@@ -55,6 +55,27 @@ final class ManaPaymentExecution {
         return ManaSourceTraits.of(sa).hasTapCost;
     }
 
+    /**
+     * Lower is better when a Converge/Sunburst generic pip was remapped to {@code shard}.
+     * Prefer a single-pip mono source of that color so later pips can claim other unpaid colors.
+     */
+    static int convergeSourceRank(final SpellAbility ma, final ManaCostShard shard) {
+        final ManaSourceTraits t = ManaSourceTraits.of(ma);
+        if (t.anyMultiManaProducer || t.isMultiManaCombo()) {
+            return 30;
+        }
+        if (t.anyMana || t.comboMana) {
+            return 20;
+        }
+        if (t.producesOnlyColorless) {
+            return 40;
+        }
+        if (shard != null && t.producedAmount == 1 && !t.anyMana) {
+            return 0;
+        }
+        return 10;
+    }
+
     static boolean isMultiManaDisposable(final SpellAbility ma) {
         return ManaSourceTraits.of(ma).multiManaDisposable;
     }
@@ -903,10 +924,16 @@ final class ManaPaymentExecution {
         // One activation that finishes the whole cost (Academy for {1}{U}, Firemind Vessel, Cornucopia)
         // beats a 1-mana source for this pip plus a second tap. Nested filter probes keep sort order.
         if (ctx == null || (!ctx.inFilterActivationProbe && ctx.depth <= 1)) {
-            final SpellAbility entireCost = pickFreeFlexibleMultiThatPaysEntireCost(cost, sa, ai, toPay, valid,
-                    test, ctx);
-            if (entireCost != null) {
-                return entireCost;
+            // Sunburst/Converge: don't finish the whole cost with one Any/combo multi while new
+            // colors can still be sought — that collapses distinct colors paid.
+            final boolean maximizeConverge = sa != null && sa.getHostCard() != null && sa.getHostCard().hasConverge()
+                    && ComputerUtilMana.unpaidConvergeColorMask(cost) != 0;
+            if (!maximizeConverge) {
+                final SpellAbility entireCost = pickFreeFlexibleMultiThatPaysEntireCost(cost, sa, ai, toPay, valid,
+                        test, ctx);
+                if (entireCost != null) {
+                    return entireCost;
+                }
             }
         }
         if (valid.size() == 1 || (ctx != null && ctx.inFilterActivationProbe) || !CastabilityProbe.shouldUse(sa, test, ctx)
@@ -1293,7 +1320,8 @@ final class ManaPaymentExecution {
         if (ManaFilterConsolidation.isMultiPipActivationFilter(chosen)) {
             ComputerUtilMana.payMultipleMana(remaining, ComputerUtilMana.predictManafromSpellAbility(chosen, ai, toPay, remaining), ai);
         } else if (ManaFilterConsolidation.isMultiManaComboAbility(chosen)) {
-            ComputerUtilMana.setComboManaChoice(ai, chosen, remaining);
+            // Probe has no spell context here; pass null (no Sunburst maximize flag).
+            ComputerUtilMana.setComboManaChoice(ai, chosen, remaining, null);
             try {
                 ComputerUtilMana.payMultipleMana(remaining,
                         ComputerUtilMana.capComboManaProduced(ComputerUtilMana.predictManafromSpellAbility(chosen, ai, toPay, remaining),
@@ -2413,7 +2441,7 @@ final class ManaPaymentExecution {
             }
         }
         if (ManaFilterConsolidation.isMultiManaComboAbility(ma)) {
-            ComputerUtilMana.setComboManaChoice(ai, ma, cost);
+            ComputerUtilMana.setComboManaChoice(ai, ma, cost, sa);
         }
         return true;
     }
@@ -2819,8 +2847,15 @@ final class ManaPaymentExecution {
                         && !poolCanPayAnyUnpaidColoredShard(cost, sa, manapool)) {
                     break;
                 }
+                // Sunburst/Converge: leave colorless / already-paid floating mana alone while board
+                // sources can still add a new color toward maximum distinct colors.
+                final boolean deferNonNewPool = converge
+                        && ComputerUtilMana.hasAvailableUnpaidConvergeSource(cost, sourcesForShards);
                 boolean found = false;
                 for (byte color : ManaAtom.MANATYPES) {
+                    if (deferNonNewPool && !ComputerUtilMana.poolManaAddsNewConvergeColor(cost, color)) {
+                        continue;
+                    }
                     if (manapool.tryPayCostWithColor(color, sa, cost, manaSpentToPay)) {
                         ctx.recordStep(sa, test, () -> "  Pool pays " + MagicColor.toShortString(color)
                                 + " for " + ManaPaymentTracer.manaPaymentSpellLabel(sa));
@@ -2841,7 +2876,10 @@ final class ManaPaymentExecution {
             }
 
             // Multi-pip opportunities before shard-by-shard: banking chain, then single consolidator.
-            if (ManaPaymentBanking.tryMultiPipPayment(cost, sa, ai, sourcesForShards, manaSpentToPay,
+            // Skip while Sunburst can still gain a new color from single-pip sources — colorless
+            // multis (Sol Ring / Dynamo) would otherwise burn pips that could have been new colors.
+            if (!(converge && ComputerUtilMana.hasAvailableUnpaidConvergeSource(cost, sourcesForShards))
+                    && ManaPaymentBanking.tryMultiPipPayment(cost, sa, ai, sourcesForShards, manaSpentToPay,
                     testDepositedSurplus, test, effect, manapool, planOut, paymentList, ctx)) {
                 continue;
             }
@@ -2852,18 +2890,21 @@ final class ManaPaymentExecution {
             }
 
             Collection<SpellAbility> saList = null;
+            boolean remappedForConverge = false;
             if (converge && (toPay == ManaCostShard.GENERIC || toPay == ManaCostShard.X)) {
                 for (final MagicColor.Color b : ColorSet.fromMask(ComputerUtilMana.unpaidConvergeColorMask(cost))) {
                     final ManaCostShard shard = ManaCostShard.valueOf(b.getColorMask());
                     saList = sourcesForShards.get(shard);
                     if (saList != null && !saList.isEmpty()) {
                         toPay = shard;
+                        remappedForConverge = true;
                         break;
                     }
                 }
                 if (saList == null || saList.isEmpty()) {
                     saList = sourcesForShards.get(toPay);
-                    converge = false;
+                    // Keep trying for new colors on later pips — a single miss must not disable
+                    // maximization for the rest of the payment.
                 }
             } else if (sourcesForShards == null && purePhyrexian) {
                 saList = Lists.newArrayList();
@@ -2878,6 +2919,14 @@ final class ManaPaymentExecution {
                 final ManaAbilitySort.GenericColorPreference pref = ManaAbilitySort.resolveGenericColorPreference(ai, sa);
                 final List<SpellAbility> sorted = Lists.newArrayList(saList);
                 sorted.sort((a, b) -> ManaAbilitySort.compareGenericCandidatesForPayment(a, b, pref, cost.getGenericManaAmount(), sa, ai));
+                saList = sorted;
+            } else if (remappedForConverge && saList != null && saList.size() > 1) {
+                // Prefer a mono producer of the remapped color over Any/combo multis so each pip
+                // can claim a distinct unpaid color (Vessel + three basics → three colors).
+                final ManaCostShard convergeShard = toPay;
+                final List<SpellAbility> sorted = Lists.newArrayList(saList);
+                sorted.sort((a, b) -> Integer.compare(
+                        convergeSourceRank(a, convergeShard), convergeSourceRank(b, convergeShard)));
                 saList = sorted;
             }
             final ManaCostShard shardForLog = toPay;

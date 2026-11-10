@@ -10,12 +10,14 @@ import forge.ai.simulation.GameSimulator;
 import forge.ai.simulation.Plan;
 import forge.ai.simulation.SimulationTest;
 import forge.ai.simulation.SpellAbilityPicker;
+import forge.card.mana.ManaAtom;
 import forge.card.mana.ManaCost;
 import forge.card.mana.ManaCostParser;
 import forge.game.Game;
 import forge.game.card.Card;
 import forge.game.card.CardCollection;
 import forge.game.card.CounterEnumType;
+import forge.game.mana.Mana;
 import forge.game.mana.ManaCostBeingPaid;
 import forge.game.phase.PhaseType;
 import forge.game.player.Player;
@@ -2884,6 +2886,101 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertTrue(canAutoPay(game, p, cost("4 W G"), sa));
         AssertJUnit.assertTrue(canAutoPay(game, p, cost("2 W W"), sa));
         AssertJUnit.assertTrue(prodAutoPay(game, p, cost("2 W W"), sa));
+    }
+
+    /**
+     * Sunburst / Converge should maximize distinct colors paid. With Sol Ring + five basics for
+     * {@code {3}}, prefer three different colored basics over Sol Ring's {@code {C}{C}} plus one color.
+     */
+    @Test
+    public void sunburstMaximizesDistinctColorsOverSolRing() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Sol Ring", p);
+        addCard("Plains", p);
+        addCard("Island", p);
+        addCard("Swamp", p);
+        addCard("Mountain", p);
+        addCard("Forest", p);
+
+        Card spell = addCardToZone("Suntouched Myr", p, ZoneType.Hand);
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        sa.setActivatingPlayer(p);
+        ManaCostBeingPaid mc = new ManaCostBeingPaid(spell.getManaCost());
+        AssertJUnit.assertTrue(prodAutoPay(game, p, mc, sa));
+        AssertJUnit.assertEquals("Sol Ring should stay untapped when colored basics maximize Sunburst",
+                0, countTapped(game, "Sol Ring"));
+        int coloredBasics = countTapped(game, "Plains") + countTapped(game, "Island")
+                + countTapped(game, "Swamp") + countTapped(game, "Mountain") + countTapped(game, "Forest");
+        AssertJUnit.assertEquals(3, coloredBasics);
+        AssertJUnit.assertEquals("Sunburst should use three distinct colors, not Sol Ring + one",
+                3, mc.getSunburst());
+    }
+
+    /**
+     * Floating colorless must not burn Sunburst pips while untapped colored sources can still add new colors.
+     */
+    @Test
+    public void sunburstPrefersNewColorsOverFloatingColorless() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card solRing = addCard("Sol Ring", p);
+        addCard("Plains", p);
+        addCard("Island", p);
+        addCard("Swamp", p);
+        addCard("Mountain", p);
+        addCard("Forest", p);
+
+        // Pre-float {C}{C}{C} as if Thran Dynamo / prior activation already filled the pool.
+        p.getManaPool().addMana(
+                new Mana((byte) ManaAtom.COLORLESS, solRing, null, p),
+                new Mana((byte) ManaAtom.COLORLESS, solRing, null, p),
+                new Mana((byte) ManaAtom.COLORLESS, solRing, null, p));
+
+        Card spell = addCardToZone("Suntouched Myr", p, ZoneType.Hand);
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        sa.setActivatingPlayer(p);
+        ManaCostBeingPaid mc = new ManaCostBeingPaid(spell.getManaCost());
+        AssertJUnit.assertTrue(prodAutoPay(game, p, mc, sa));
+        int coloredBasics = countTapped(game, "Plains") + countTapped(game, "Island")
+                + countTapped(game, "Swamp") + countTapped(game, "Mountain") + countTapped(game, "Forest");
+        AssertJUnit.assertEquals("Should tap three colored basics instead of spending floating {C}",
+                3, coloredBasics);
+        AssertJUnit.assertEquals(3, mc.getSunburst());
+    }
+
+    /**
+     * Multi any-mana (Firemind Vessel) paying Sunburst should spread into unpaid colors, not dump one color.
+     */
+    @Test
+    public void sunburstMultiAnySpreadsUnpaidColors() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card vessel = addCard("Firemind Vessel", p);
+        vessel.setTapped(false);
+        addCard("Plains", p);
+        addCard("Island", p);
+        addCard("Swamp", p);
+
+        Card spell = addCardToZone("Suntouched Myr", p, ZoneType.Hand);
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        sa.setActivatingPlayer(p);
+        ManaCostBeingPaid mc = new ManaCostBeingPaid(spell.getManaCost());
+        AssertJUnit.assertTrue(prodAutoPay(game, p, mc, sa));
+        AssertJUnit.assertEquals("Vessel + one basic should reach three colors for Sunburst",
+                3, mc.getSunburst());
     }
 
     /**

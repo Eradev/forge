@@ -569,6 +569,19 @@ public class ComputerUtilMana {
                 return c;
             }
         }
+        // Sunburst/Converge: prefer a not-yet-paid color before prominence / W-default.
+        if (remainingCost != null && saPaidFor != null && saPaidFor.getHostCard() != null
+                && saPaidFor.getHostCard().hasConverge()) {
+            for (final MagicColor.Color color : ColorSet.fromMask(unpaidConvergeColorMask(remainingCost))) {
+                final byte c = color.getColorMask();
+                if (toPay != null && canUseAnyManaColorForShard(ai, saPaidFor, sourceCard, toPay, c)) {
+                    return c;
+                }
+                if (toPay == null && (sourceCard == null || saPaidFor.allowsPayingWithShard(sourceCard, c))) {
+                    return c;
+                }
+            }
+        }
         // Generic/{C}: prefer hand+battlefield identity over the W-first WUBRG scan (#12727 / 62ffaaed).
         final byte prominent = CardFactoryUtil.getMostProminentColors(
                 ai.getCardsIn(ZoneType.Hand, ZoneType.Battlefield));
@@ -768,8 +781,10 @@ public class ComputerUtilMana {
             StaticAbilityManaConvert.manaConvert(manapool, ai, sa.getHostCard(), effect && !sa.isCastFromPlayEffect() ? null : sa);
         }
 
-        // not worth checking if it makes sense to not spend floating first
-        if (manapool.payManaCostFromPool(cost, sa, test, manaSpentToPay)) {
+        // Floating-only pay is fine for ordinary costs, but Sunburst/Converge must still be able to
+        // activate colored sources for new colors instead of burning the whole cost as {C}/{already-paid}.
+        final boolean hasConverge = sa.getHostCard() != null && sa.getHostCard().hasConverge();
+        if (!hasConverge && manapool.payManaCostFromPool(cost, sa, test, manaSpentToPay)) {
             ctx.recordStep(sa, test, "Pool pays (floating mana)");
             CostPayment.handleOfferings(sa, test, cost.isPaid());
             ManaPaymentTracer.logResult(test, true, "  result: PAID (pool)", ctx);
@@ -837,7 +852,6 @@ public class ComputerUtilMana {
         }
 
         boolean purePhyrexian = cost.containsOnlyPhyrexianMana();
-        boolean hasConverge = sa.getHostCard().hasConverge();
         ListMultimap<ManaCostShard, SpellAbility> sourcesForShards = getSourcesForShards(cost, sa, ai, test, checkPlayable, hasConverge, ctx);
 
         List<Mana> testDepositedSurplus = null;
@@ -932,24 +946,32 @@ public class ComputerUtilMana {
     }
 
     static void setComboManaChoice(final Player ai, final SpellAbility manaAb, final ManaCostBeingPaid cost) {
+        setComboManaChoice(ai, manaAb, cost, null);
+    }
+
+    static void setComboManaChoice(final Player ai, final SpellAbility manaAb, final ManaCostBeingPaid cost,
+            final SpellAbility saPaidFor) {
         final AbilityManaPart comboMana = manaAb.getManaPart();
         final int amount = manaAb.hasParam("Amount") ? AbilityUtils.calculateAmount(manaAb.getHostCard(), manaAb.getParam("Amount"), manaAb) : 1;
         final String expressHint = comboMana.getExpressChoice();
         comboMana.clearExpressChoice();
         final String preferredColor = expressHint != null && !expressHint.isEmpty() && !expressHint.contains(" ")
                 ? expressHint : "";
+        final boolean maximizeConverge = saPaidFor != null && saPaidFor.getHostCard() != null
+                && saPaidFor.getHostCard().hasConverge();
         final String choices = buildComboManaChoiceString(ai, manaAb, cost, amount,
-                requiresDifferentComboColors(comboMana), preferredColor);
+                requiresDifferentComboColors(comboMana), preferredColor, maximizeConverge);
         comboMana.setExpressChoice(choices);
     }
 
     static String buildComboManaChoiceString(final Player ai, final SpellAbility manaAb,
             final ManaCostBeingPaid cost, final int amount, final boolean different) {
-        return buildComboManaChoiceString(ai, manaAb, cost, amount, different, "");
+        return buildComboManaChoiceString(ai, manaAb, cost, amount, different, "", false);
     }
 
     private static String buildComboManaChoiceString(final Player ai, final SpellAbility manaAb,
-            final ManaCostBeingPaid cost, final int amount, final boolean different, final String preferredColor) {
+            final ManaCostBeingPaid cost, final int amount, final boolean different, final String preferredColor,
+            final boolean maximizeConverge) {
         final StringBuilder choiceString = new StringBuilder();
         final AbilityManaPart comboMana = manaAb.getManaPart();
         final ManaCostBeingPaid testCost = new ManaCostBeingPaid(cost);
@@ -964,6 +986,20 @@ public class ComputerUtilMana {
                     && colorAllowedForComboPick(preferredColor, different, remainingOptions)
                     && testCost.isAnyPartPayableWith(ManaAtom.fromName(preferredColor), ai.getManaPool())) {
                 choice = preferredColor;
+            }
+            // Prefer not-yet-paid Sunburst/Converge colors for each combo pip (spread, don't dump).
+            if (choice.isEmpty() && !testCost.isPaid() && maximizeConverge) {
+                for (final MagicColor.Color color : ColorSet.fromMask(unpaidConvergeColorMask(testCost))) {
+                    final String c = color.getShortName();
+                    if (!colorAllowedForComboPick(c, different, remainingOptions)) {
+                        continue;
+                    }
+                    if (satisfiesColorChoice(comboMana, choiceString, c) && manaAb.canProduce(c)
+                            && testCost.isAnyPartPayableWith(ManaAtom.fromName(c), ai.getManaPool())) {
+                        choice = c;
+                        break;
+                    }
+                }
             }
             if (choice.isEmpty() && !testCost.isPaid()) {
                 for (String color : comboColors) {
@@ -1079,7 +1115,7 @@ public class ComputerUtilMana {
                     if (!shared.isColorless()) {
                         m.setExpressChoice(shared.iterator().next().getShortName());
                     }
-                    setComboManaChoice(ai, tail, cost);
+                    setComboManaChoice(ai, tail, cost, sa);
                     return true;
                 }
             }
@@ -1265,8 +1301,36 @@ public class ComputerUtilMana {
      * Color mask of converge colors still needed: unpaid colored requirements plus colors not yet paid,
      * using {@link ManaCostShard#COLORS_SUPERPOSITION} so already-paid colors drop out of the "need" set.
      */
+    /**
+     * Colors not yet required unpaid and not yet paid — the ones Converge/Sunburst still wants.
+     * Uses {@code |} (not {@code +}) so overlapping bits cannot carry into another color.
+     */
     static int unpaidConvergeColorMask(final ManaCostBeingPaid cost) {
-        return cost.getUnpaidColors() + cost.getColorsPaid() ^ ManaCostShard.COLORS_SUPERPOSITION;
+        return (cost.getUnpaidColors() | cost.getColorsPaid()) ^ ManaCostShard.COLORS_SUPERPOSITION;
+    }
+
+    /** True when a board source can still produce a not-yet-paid Converge/Sunburst color. */
+    static boolean hasAvailableUnpaidConvergeSource(final ManaCostBeingPaid cost,
+            final ListMultimap<ManaCostShard, SpellAbility> sourcesForShards) {
+        if (cost == null || sourcesForShards == null) {
+            return false;
+        }
+        for (final MagicColor.Color color : ColorSet.fromMask(unpaidConvergeColorMask(cost))) {
+            final Collection<SpellAbility> sources = sourcesForShards.get(ManaCostShard.valueOf(color.getColorMask()));
+            if (sources != null && !sources.isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Pool mana that does not increase {@link ManaCostBeingPaid#getColorsPaid()} for Sunburst. */
+    static boolean poolManaAddsNewConvergeColor(final ManaCostBeingPaid cost, final byte color) {
+        if (cost == null || color == 0) {
+            return false;
+        }
+        final byte colored = (byte) (color & ManaCostShard.COLORS_SUPERPOSITION);
+        return colored != 0 && (cost.getColorsPaid() & colored) == 0;
     }
 
     static ManaCostShard getNextShardToPay(ManaCostBeingPaid cost, Multimap<ManaCostShard, SpellAbility> sourcesForShards) {

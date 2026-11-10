@@ -704,7 +704,7 @@ final class ManaPaymentBanking {
             final Player ai, final ManaCostBeingPaid spellCost, final List<Mana> testDepositedSurplus,
             final boolean test, final boolean effect) {
         if (ManaFilterConsolidation.isMultiManaComboAbility(filterAb)) {
-            ComputerUtilMana.setComboManaChoice(ai, filterAb, spellCost);
+            ComputerUtilMana.setComboManaChoice(ai, filterAb, spellCost, sa);
         }
         if (test) {
             ManaPaymentExecution.predictManaForPayment(filterAb, ai, ManaCostShard.GENERIC, spellCost, testDepositedSurplus);
