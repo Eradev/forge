@@ -2885,4 +2885,30 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertTrue(canAutoPay(game, p, cost("2 W W"), sa));
         AssertJUnit.assertTrue(prodAutoPay(game, p, cost("2 W W"), sa));
     }
+
+    /**
+     * Or2Generic CMC is 2 but one colored mana pays the shard. Fail-fast must not treat
+     * {@code {1}{2/U}{2/R}} as needing 5 pips when U+R+generic sources can cover it in 3–4.
+     */
+    @Test
+    public void or2GenericPaysWithColoredManaWithoutCmcFailFast() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Island", p);
+        addCard("Mountain", p);
+        addCard("Plains", p);
+        addCard("Glacial Fortress", p);
+
+        Card spell = addCardToZone("Inzerva, Master of Insights", p, ZoneType.Hand);
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("1 2/U 2/R");
+        AssertJUnit.assertTrue("hybrid cost must not fail-fast on CMC 5 with 4 lands", canAutoPay(game, p, mc, sa));
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("1 2/U 2/R"), sa));
+        AssertJUnit.assertEquals(1, countTapped(game, "Island") + countTapped(game, "Glacial Fortress"));
+        AssertJUnit.assertEquals(1, countTapped(game, "Mountain"));
+    }
 }

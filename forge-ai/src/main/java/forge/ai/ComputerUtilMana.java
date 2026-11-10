@@ -786,12 +786,18 @@ public class ComputerUtilMana {
 
         // Cheap BF estimate first — defer full mana-ability map until shard simulation is needed.
         if (!cost.containsOnlyPhyrexianMana()) {
+            // Optimistic pip count: Or2Generic CMC is 2 but can be paid with one colored mana.
+            // Using raw CMC here false-fails hybrids like {1}{2/U}{2/R} when only 3–4 sources exist.
             int need = cost.getConvertedManaCost();
-            if (cost.containsPhyrexianMana()) {
-                for (final ManaCostShard shard : cost.getDistinctShards()) {
-                    if (shard.isPhyrexian()) {
-                        need -= cost.getUnpaidShards(shard);
-                    }
+            for (final ManaCostShard shard : cost.getDistinctShards()) {
+                final int unpaid = cost.getUnpaidShards(shard);
+                if (unpaid <= 0) {
+                    continue;
+                }
+                if (shard.isPhyrexian()) {
+                    need -= unpaid;
+                } else if (shard.isOr2Generic()) {
+                    need -= unpaid; // CMC counted 2; optimistic minimum is 1
                 }
             }
             final ManaAvailabilityEstimate estimate = getOrEstimateAvailableMana(ai, checkPlayable, ctx);
