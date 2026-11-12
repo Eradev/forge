@@ -80,11 +80,17 @@ final class ManaPaymentContext {
             /** Mono-type surplus index (0..5) when producedAmount &gt; 1 of one type; else -1. */
             final int monoSurplusIndex;
             final int monoSurplusAmount;
+            /**
+             * Extra pips beyond the host slot from a free Any×N / Combo×N producer (amount − 1).
+             * These can pay any remaining colored, {C}, or generic need. Mutually exclusive with
+             * mono surplus (only set when {@link #monoSurplusIndex} is −1).
+             */
+            final int flexSurplusAmount;
 
             Host(final Card host, final boolean plainFree, final boolean reusableFree,
                     final boolean freeNoPaidActivation, final boolean disposable, final boolean hasTapCost,
                     final int producedAmount, final int produceMask, final int monoSurplusIndex,
-                    final int monoSurplusAmount) {
+                    final int monoSurplusAmount, final int flexSurplusAmount) {
                 this.host = host;
                 this.plainFree = plainFree;
                 this.reusableFree = reusableFree;
@@ -95,6 +101,7 @@ final class ManaPaymentContext {
                 this.produceMask = produceMask;
                 this.monoSurplusIndex = monoSurplusIndex;
                 this.monoSurplusAmount = monoSurplusAmount;
+                this.flexSurplusAmount = flexSurplusAmount;
             }
         }
 

@@ -1485,8 +1485,10 @@ final class ManaPaymentExecution {
      * sources whose hosts are not in {@code consumed}? Mono-colored and {C} pips are matched via Hall's
      * condition over every subset of needed types; generic pips take whatever hosts are left. A plain
      * free producer of N mana of one type contributes N (one via its host, the rest as surplus that can
-     * also pay generic). Paid filters are skipped — they are extra options, not obligations. Mixed-color
-     * and any-color sources still count as one host.
+     * also pay generic). Free Any×N / Combo×N producers (Astral Cornucopia, Firemind Vessel, Starlight
+     * Cairn metalcraft) contribute the same host slot plus flex surplus of amount − 1 that can pay any
+     * remaining colored, {C}, or generic need. Paid filters are skipped — they are extra options, not
+     * obligations. Mixed-color and any-color sources otherwise still count as one host.
      * <p>
      * Returns {@code false} (defer to the full dry-run) for hybrid / Phyrexian / snow / X pips or when
      * the counts fall short. Never a false positive relative to what those free producers can pay.
@@ -1543,6 +1545,7 @@ final class ManaPaymentExecution {
         final Set<Card> held = AiCardMemory.getMemorySet(ai, MemorySet.HELD_MANA_SOURCES_FOR_NEXT_SPELL);
         final Map<Card, Integer> hostMasks = new IdentityHashMap<>();
         final Map<Card, int[]> surplusByHost = new IdentityHashMap<>();
+        int flexSurplusTotal = 0;
         for (final ManaPaymentContext.FreeSourceInventory.Host info : getOrBuildFreeSourceInventory(ai, ctx).hosts) {
             if (includeComboFree ? !info.reusableFree : !info.plainFree) {
                 continue;
@@ -1562,6 +1565,9 @@ final class ManaPaymentExecution {
                 final int[] extra = surplusByHost.computeIfAbsent(host, h -> new int[6]);
                 extra[info.monoSurplusIndex] = Math.max(extra[info.monoSurplusIndex], info.monoSurplusAmount);
             }
+            if (info.flexSurplusAmount > 0) {
+                flexSurplusTotal += info.flexSurplusAmount;
+            }
         }
 
         final int[] surplus = new int[6];
@@ -1580,6 +1586,21 @@ final class ManaPaymentExecution {
         needs[5] -= useColorless;
         genericSurplus += surplus[5] - useColorless;
         generic = Math.max(0, generic - genericSurplus);
+
+        // Flex surplus from free Any×N / Combo×N: pay remaining colored, then {C}, then generic.
+        for (int i = 0; i < 5 && flexSurplusTotal > 0; i++) {
+            final int use = Math.min(needs[i], flexSurplusTotal);
+            needs[i] -= use;
+            flexSurplusTotal -= use;
+        }
+        if (flexSurplusTotal > 0 && needs[5] > 0) {
+            final int use = Math.min(needs[5], flexSurplusTotal);
+            needs[5] -= use;
+            flexSurplusTotal -= use;
+        }
+        if (flexSurplusTotal > 0) {
+            generic = Math.max(0, generic - flexSurplusTotal);
+        }
 
         neededTypesMask = 0;
         int coloredNeed = 0;
@@ -1624,7 +1645,7 @@ final class ManaPaymentExecution {
         }
         final ManaPaymentContext.FreeSourceInventory inv = new ManaPaymentContext.FreeSourceInventory();
         final Map<Card, int[]> acc = new IdentityHashMap<>();
-        // acc: [plain, reusable, free, disposable, hasTap, produced, produceMask, monoIdx+1, monoSurplus]
+        // acc: [plain, reusable, free, disposable, hasTap, produced, produceMask, monoIdx+1, monoSurplus, flexSurplus]
         for (final SpellAbility ma : ComputerUtilMana.getOrBuildUniqueManaAbilities(ai, true, ctx)) {
             final ManaSourceTraits traits = ManaSourceTraits.of(ma);
             if (!traits.isManaAbility || traits.hasManaActivationCost) {
@@ -1648,7 +1669,11 @@ final class ManaPaymentExecution {
             }
             final int mono = monoProducedTypeIndex(traits);
             final int monoSurplus = mono >= 0 ? Math.max(0, traits.producedAmount - 1) : 0;
-            final int[] row = acc.computeIfAbsent(host, h -> new int[9]);
+            // Any×N / Combo×N: host counts once; remaining pips are flexible cover (not typed mono).
+            final int flexSurplus = (mono < 0 && traits.producedAmount > 1
+                    && (traits.anyMultiManaProducer || traits.isMultiManaCombo()))
+                    ? traits.producedAmount - 1 : 0;
+            final int[] row = acc.computeIfAbsent(host, h -> new int[10]);
             if (plain) {
                 row[0] = 1;
             }
@@ -1668,11 +1693,14 @@ final class ManaPaymentExecution {
                 row[7] = mono + 1;
                 row[8] = monoSurplus;
             }
+            if (flexSurplus > row[9]) {
+                row[9] = flexSurplus;
+            }
         }
         for (final Map.Entry<Card, int[]> e : acc.entrySet()) {
             final int[] row = e.getValue();
             inv.hosts.add(new ManaPaymentContext.FreeSourceInventory.Host(e.getKey(), row[0] != 0, row[1] != 0,
-                    row[2] != 0, row[3] != 0, row[4] != 0, row[5], row[6], row[7] - 1, row[8]));
+                    row[2] != 0, row[3] != 0, row[4] != 0, row[5], row[6], row[7] - 1, row[8], row[9]));
         }
         if (ctx != null) {
             ctx.caches.freeSourceInventory = inv;

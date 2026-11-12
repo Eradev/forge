@@ -2347,6 +2347,77 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertEquals(0, countTapped(game, "Plains"));
     }
 
+    /**
+     * Kin board analogue: free Any×3 (Astral Cornucopia / Starlight Cairn metalcraft) + Mox Jet
+     * cover {@code {2}{B}{B}} without sacrificing Black Lotus. Prior bug counted the multi as one
+     * host with no surplus, so Lotus looked necessary and then leftover {@code {1}} tapped a {C} mode.
+     */
+    @Test
+    public void freeAnyMultiPlusMoxBeatsBlackLotusForTwoBlackTwoGeneric() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Black Lotus", p);
+        Card cornucopia = addCard("Astral Cornucopia", p);
+        cornucopia.addCounterInternal(CounterEnumType.CHARGE, 3, p, false, null, null);
+        addCard("Mox Jet", p);
+        addCard("Reliquary Tower", p);
+        Card spell = addCardToZone("Damnation", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("2 B B");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertFalse("Black Lotus should stay in play; actual sources: " + sources,
+                sources.anyMatch(c -> "Black Lotus".equals(c.getName())));
+        AssertJUnit.assertTrue("Astral Cornucopia should pay multi; actual sources: " + sources,
+                sources.anyMatch(c -> "Astral Cornucopia".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("2 B B"), sa));
+        AssertJUnit.assertEquals("Black Lotus should remain unsacrificed", 1,
+                game.getCardsIn(ZoneType.Battlefield).stream().filter(c -> "Black Lotus".equals(c.getName())).count());
+        AssertJUnit.assertTrue(cornucopia.isTapped());
+    }
+
+    /**
+     * Free Combo Any×2 (Key to the Archive) + Mox + colorless land cover {@code {2}{B}{B}} without Lotus.
+     * Flex surplus from the combo multi must count toward Hall cover the same way Any×N does.
+     */
+    @Test
+    public void freeComboMultiPlusMoxBeatsBlackLotusForTwoBlackTwoGeneric() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        addCard("Black Lotus", p);
+        Card key = addCard("Key to the Archive", p);
+        key.setTapped(false);
+        addCard("Mox Jet", p);
+        addCard("Reliquary Tower", p);
+        Card spell = addCardToZone("Damnation", p, ZoneType.Hand);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        ManaCostBeingPaid mc = cost("2 B B");
+        AssertJUnit.assertTrue(canAutoPay(game, p, mc, sa));
+
+        CardCollection sources = predictedManaSources(game, p, mc, sa);
+        AssertJUnit.assertFalse("Black Lotus should stay in play; actual sources: " + sources,
+                sources.anyMatch(c -> "Black Lotus".equals(c.getName())));
+        AssertJUnit.assertTrue("Key to the Archive should pay combo multi; actual sources: " + sources,
+                sources.anyMatch(c -> "Key to the Archive".equals(c.getName())));
+
+        AssertJUnit.assertTrue(prodAutoPay(game, p, cost("2 B B"), sa));
+        AssertJUnit.assertEquals("Black Lotus should remain unsacrificed", 1,
+                game.getCardsIn(ZoneType.Battlefield).stream().filter(c -> "Black Lotus".equals(c.getName())).count());
+        AssertJUnit.assertTrue(key.isTapped());
+    }
+
     // {2}{B}{B}: Mana Crypt + Badlands + Study Hall/Tower beat sacrificing Black Lotus.
     @Test
     public void reusableSourcesBeatBlackLotusForTwoBlackTwoGeneric() {
