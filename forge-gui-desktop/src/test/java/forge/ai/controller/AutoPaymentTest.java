@@ -13,6 +13,7 @@ import forge.ai.simulation.SpellAbilityPicker;
 import forge.card.mana.ManaAtom;
 import forge.card.mana.ManaCost;
 import forge.card.mana.ManaCostParser;
+import forge.card.mana.ManaCostShard;
 import forge.game.Game;
 import forge.game.card.Card;
 import forge.game.card.CardCollection;
@@ -2886,6 +2887,80 @@ public class AutoPaymentTest extends SimulationTest {
         AssertJUnit.assertTrue(canAutoPay(game, p, cost("4 W G"), sa));
         AssertJUnit.assertTrue(canAutoPay(game, p, cost("2 W W"), sa));
         AssertJUnit.assertTrue(prodAutoPay(game, p, cost("2 W W"), sa));
+    }
+
+    /**
+     * Floating {@code {C}} must not satisfy colored pips. Kin log: {@code {W}{U}{R}} for Elsha
+     * reported {@code PAID (pool)} from floating {@code C×3}.
+     */
+    @Test
+    public void floatingColorlessDoesNotPayColoredCost() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card solRing = addCard("Sol Ring", p);
+        p.getManaPool().addMana(
+                new Mana((byte) ManaAtom.COLORLESS, solRing, null, p),
+                new Mana((byte) ManaAtom.COLORLESS, solRing, null, p),
+                new Mana((byte) ManaAtom.COLORLESS, solRing, null, p));
+
+        // Match Kin's log: spell already on the stack while testing payment.
+        Card spell = addSpellOnStack(game, "Elsha, Threefold Master", p);
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+
+        SpellAbility sa = spell.getFirstSpellAbility();
+        sa.setActivatingPlayer(p);
+
+        // Direct pool path — same early exit that logs "PAID (pool)".
+        final boolean[] poolPaid = new boolean[1];
+        p.runWithController(() -> {
+            ManaCostBeingPaid probe = cost("W U R");
+            java.util.List<Mana> spent = new java.util.ArrayList<>();
+            poolPaid[0] = p.getManaPool().payManaCostFromPool(probe, sa, true, spent);
+            AssertJUnit.assertFalse("payManaCostFromPool must not clear {W}{U}{R} with only {C}", poolPaid[0]);
+            AssertJUnit.assertFalse(probe.isPaid());
+            AssertJUnit.assertEquals("{W}{U}{R}", probe.toString());
+        }, new PlayerControllerAi(game, p, p.getOriginalLobbyPlayer()));
+
+        ManaCostBeingPaid mc = cost("W U R");
+        AssertJUnit.assertFalse("floating {C}{C}{C} must not pay {W}{U}{R}", canAutoPay(game, p, mc, sa));
+        AssertJUnit.assertEquals(3, p.getManaPool().totalMana());
+        AssertJUnit.assertFalse("pool must not claim {W} can be paid with {C}",
+                p.getManaPool().canPayForShardWithColor(ManaCostShard.WHITE, (byte) ManaAtom.COLORLESS));
+    }
+
+    /**
+     * Mana conversion applied during one payment must not leak onto the pool for the next.
+     * Otherwise floating {@code {C}} can falsely pay {@code {W}{U}{R}} after C→AnyColor.
+     */
+    @Test
+    public void manaConversionDoesNotLeakAcrossPayments() {
+        Game game = initAndCreateGame();
+        Player p = game.getPlayers().get(1);
+
+        Card solRing = addCard("Sol Ring", p);
+        p.getManaPool().addMana(
+                new Mana((byte) ManaAtom.COLORLESS, solRing, null, p),
+                new Mana((byte) ManaAtom.COLORLESS, solRing, null, p),
+                new Mana((byte) ManaAtom.COLORLESS, solRing, null, p));
+
+        Card elsha = addSpellOnStack(game, "Elsha, Threefold Master", p);
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p);
+        game.getAction().checkStateEffects(true);
+        SpellAbility elshaSa = elsha.getFirstSpellAbility();
+        elshaSa.setActivatingPlayer(p);
+
+        // Simulate a prior payment that applied C→AnyColor and forgot to restore (pre-fix leak).
+        forge.game.ability.AbilityUtils.applyManaColorConversion(p.getManaPool(), "AnyType->AnyColor");
+        AssertJUnit.assertTrue("with C→AnyColor, floating {C} can pay {W}",
+                p.getManaPool().canPayForShardWithColor(ManaCostShard.WHITE, (byte) ManaAtom.COLORLESS));
+
+        // canAutoPay restores the matrix at start/end — leaked conversion must not survive.
+        AssertJUnit.assertFalse("payment must clear leaked C→AnyColor so {C} cannot pay {W}{U}{R}",
+                canAutoPay(game, p, cost("W U R"), elshaSa));
+        AssertJUnit.assertFalse("matrix must be restored after payment attempt",
+                p.getManaPool().canPayForShardWithColor(ManaCostShard.WHITE, (byte) ManaAtom.COLORLESS));
     }
 
     /**

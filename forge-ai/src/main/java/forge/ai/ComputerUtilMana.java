@@ -764,23 +764,36 @@ public class ComputerUtilMana {
         ManaPaymentTracer.logMain(test, () -> "paying " + cost + " for " + ManaPaymentTracer.manaPaymentSpellLabel(sa)
                 + (ctx.isOutermost() && !manapool.isEmpty() ? " (floating: " + manapool + ")" : ""), ctx);
 
-        // Apply color/type conversion matrix if necessary (already done via autopay)
-        if (ai.getControllingPlayer() == null) {
-            manapool.restoreColorReplacements();
-            CardPlayOption mayPlay = sa.getMayPlayOption();
-            if (!effect) {
-                if (sa.isSpell() && mayPlay != null) {
-                    mayPlay.applyManaConvert(manapool);
-                } else if (sa.isActivatedAbility() && sa.getGrantorStatic() != null && sa.getGrantorStatic().hasParam("ManaConversion")) {
-                    AbilityUtils.applyManaColorConversion(manapool, sa.getGrantorStatic().getParam("ManaConversion"));
-                }
+        // Always restore first so a prior payment cannot leave C→AnyColor (or similar) leaked on the pool.
+        // Previously skipped when controllingPlayer != null, which left leaked conversion active and let
+        // floating {C} satisfy colored pips (Kin / FSA-15).
+        manapool.restoreColorReplacements();
+        CardPlayOption mayPlay = sa.getMayPlayOption();
+        if (!effect) {
+            if (sa.isSpell() && mayPlay != null) {
+                mayPlay.applyManaConvert(manapool);
+            } else if (sa.isActivatedAbility() && sa.getGrantorStatic() != null && sa.getGrantorStatic().hasParam("ManaConversion")) {
+                AbilityUtils.applyManaColorConversion(manapool, sa.getGrantorStatic().getParam("ManaConversion"));
             }
-            if (sa.hasParam("ManaConversion")) {
-                AbilityUtils.applyManaColorConversion(manapool, sa.getParam("ManaConversion"));
-            }
-            StaticAbilityManaConvert.manaConvert(manapool, ai, sa.getHostCard(), effect && !sa.isCastFromPlayEffect() ? null : sa);
         }
+        if (sa.hasParam("ManaConversion")) {
+            AbilityUtils.applyManaColorConversion(manapool, sa.getParam("ManaConversion"));
+        }
+        StaticAbilityManaConvert.manaConvert(manapool, ai, sa.getHostCard(), effect && !sa.isCastFromPlayEffect() ? null : sa);
 
+        try {
+            return payManaCostImplBodyAfterConversion(cost, sa, ai, test, checkPlayable, effect, planOut, ctx,
+                    manaSpentToPay, paymentList, manapool, poolSnapshotAtStart);
+        } finally {
+            // Prevent conversion (e.g. Orrery/Vizier C→color) from leaking into later human/AI payments.
+            manapool.restoreColorReplacements();
+        }
+    }
+
+    private static List<Mana> payManaCostImplBodyAfterConversion(final ManaCostBeingPaid cost, final SpellAbility sa,
+            final Player ai, final boolean test, boolean checkPlayable, boolean effect, final CardCollection planOut,
+            final ManaPaymentContext ctx, final List<Mana> manaSpentToPay, final List<SpellAbility> paymentList,
+            final ManaPool manapool, final List<Mana> poolSnapshotAtStart) {
         // Floating-only pay is fine for ordinary costs, but Sunburst/Converge must still be able to
         // activate colored sources for new colors instead of burning the whole cost as {C}/{already-paid}.
         final boolean hasConverge = sa.getHostCard() != null && sa.getHostCard().hasConverge();

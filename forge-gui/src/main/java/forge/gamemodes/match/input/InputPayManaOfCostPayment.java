@@ -114,6 +114,8 @@ public class InputPayManaOfCostPayment extends InputPayMana {
             return;
         }
 
+        // Start from identity so a prior AI payment cannot leave C→AnyColor leaked on the pool.
+        player.getManaPool().restoreColorReplacements();
         player.getManaPool().applyCardMatrix(extraMatrix);
     }
 }

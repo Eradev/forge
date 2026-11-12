@@ -2948,7 +2948,10 @@ public class AbilityUtils {
 
             byte replacedColor = ManaAtom.fromConversion(sides[1]);
             if (sides[0].equals("AnyColor") || sides[0].equals("AnyType")) {
-                for (byte c : (sides[0].equals("AnyColor") ? MagicColor.WUBRG : MagicColor.WUBRGC)) {
+                // AnyType must use ManaAtom.MANATYPES ({C}=1<<5), not MagicColor.WUBRGC ({C}=0).
+                // MagicColor.COLORLESS is 0 and only hits the {C} row via getIndexOfFirstManaType(-1) fallback.
+                final byte[] sources = sides[0].equals("AnyColor") ? MagicColor.WUBRG : ManaAtom.MANATYPES;
+                for (byte c : sources) {
                     matrix.adjustColorReplacement(c, replacedColor, additive);
                 }
             } else if (sides[0].startsWith("non")) {

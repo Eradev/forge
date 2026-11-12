@@ -349,6 +349,12 @@ public class ManaPool extends ManaConversionMatrix implements Iterable<Mana> {
             }
         }
 
+        // Only untyped/fully-restricted mana (line == 0) may fall back to "no type" payment.
+        // Do not let a non-empty line that failed to match (e.g. raw {C} vs {W}) succeed via (byte)0 —
+        // that would make floating colorless incorrectly satisfy colored pips.
+        if (line != 0) {
+            return false;
+        }
         return shard.canBePaidWithManaOfColor((byte)0);
     }
 
